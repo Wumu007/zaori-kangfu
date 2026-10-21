@@ -1,0 +1,36 @@
+name: med_reminder
+description: 早日康复 App（V1）—— 支持语音口述录入每日用药，纯本地、不需要登录
+publish_to: 'none'
+version: 1.1.0+2
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # 语音识别：系统级 ASR（iOS Speech / Android SpeechRecognizer），免费、可离线
+  speech_to_text: ^7.0.0
+  # 语音回读确认（TTS）
+  flutter_tts: ^4.0.2
+  # 本地通知 + 精确闹钟
+  flutter_local_notifications: ^17.2.2
+  timezone: ^0.9.4
+
+  # 本地存储：结构化用药/记录用 sqlite，轻量设置用 SharedPreferences
+  sqflite: ^2.3.3
+  path: ^1.9.0
+  shared_preferences: ^2.2.3
+
+  # 通知/麦克风/精确闹钟权限与「跳系统设置」
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

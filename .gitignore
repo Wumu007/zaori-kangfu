@@ -1,0 +1,25 @@
+# ---- Flutter / Dart ----
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.g.dart.lock
+
+# ---- Android ----
+android/local.properties
+android/.gradle/
+# 签名文件与密码：绝对不能进仓库
+android/key.properties
+*.jks
+*.keystore
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db

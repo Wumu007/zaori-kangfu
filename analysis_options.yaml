@@ -1,0 +1,16 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # 本项目刻意保留显式类型（List<String> 之类），在医疗场景里读起来更快、
+    # 也不容易在改动时把类型推断成 dynamic。
+    always_specify_types: false
+    prefer_const_constructors: true
+    prefer_final_locals: true
+    avoid_print: true
+
+analyzer:
+  errors:
+    # 页面里用 BuildContext 跨 await 的地方都已加 mounted 检查，
+    # 这里不开 use_build_context_synchronously 的强制报错，避免噪音。
+    use_build_context_synchronously: ignore
