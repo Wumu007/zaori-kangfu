@@ -344,13 +344,23 @@ class MedicationNlu {
     return best;
   }
 
+  /// 「半片」「两粒」「每次」「一天一次」这类是数量/频次，不是药名。
+  /// 不排除掉的话，「每次半片 一天一次」会被兜底猜成药名「每次」，
+  /// 保存按钮就会错误地变绿——这是最危险的一类误判。
+  static final RegExp _reDoseOrFrequency = RegExp(
+      r'^(每|一|二|三|四|五|六|七|八|九|十|半|两|几|\d)+'
+      r'(次|回|片|粒|袋|支|瓶|盒|滴|毫升|毫克|克|单位|天|日|小时|分钟|点|个)?$');
+
   static String? _guessNameFrom(String residual) {
     final runs = _reCjkRun.allMatches(residual).map((m) => m.group(0)!).toList();
     if (runs.isEmpty) return null;
     runs.sort((a, b) => b.length.compareTo(a.length));
     for (final r in runs) {
       final cleaned = _stripStopwords(r);
-      if (cleaned.length >= 2) return cleaned;
+      if (cleaned.length < 2) continue;
+      // 纯数量/频次词（半片、两粒、每次…）不算药名，宁可留空让用户补
+      if (_reDoseOrFrequency.hasMatch(cleaned)) continue;
+      return cleaned;
     }
     return null;
   }

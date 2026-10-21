@@ -43,30 +43,35 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 安装 Flutter 3.24.5
+      # 用当前 stable：插件（speech_to_text 7.4 / flutter_tts 4.2.5）的构建脚本
+      # 依赖新版 Flutter 注入的 flutter.compileSdkVersion，用老版本会直接崩在
+      # 「Could not get unknown property 'flutter'」。
+      - name: 安装 Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
           channel: stable
           cache: true
 
-      # 仓库只提交「必须手写、且容易配错」的 Android 配置（清单文件、签名、
-      # 插件版本、通知接收器）；脚手架里的 gradlew / wrapper jar / mipmap 图标 /
-      # res 资源属于机械生成物，改由 flutter create 现场补，避免仓库里塞二进制。
+      # 仓库只保留「必须手写、且容易配错」的 Android 配置：清单文件（权限与
+      # 通知接收器）、签名配置、脱糖开关、应用名。其余全部是机械生成物——
+      # gradlew / wrapper / AGP 与 Kotlin 版本 / mipmap 图标 / res 资源——
+      # 由 flutter create 现场生成，好处是它们天然与当前 Flutter 版本匹配，
+      # 不会因为仓库里钉死了旧 AGP 而在半年后突然编不过。
       # cp -rn 的 -n 表示不覆盖：AndroidManifest.xml、app/build.gradle.kts、
-      # MainActivity.kt、settings.gradle.kts 全部保留仓库版本。
+      # MainActivity.kt 全部保留仓库版本。
       - name: 补齐 Android 脚手架
         run: |
           rm -rf /tmp/scaffold
           flutter create --org com.medreminder --project-name med_reminder --platforms=android /tmp/scaffold
           cp -rn /tmp/scaffold/android/. android/
-          # 关键：模板会生成 Groovy 版构建脚本，与本仓库的 Kotlin DSL 版同名共存
-          # 时 Gradle 会报重复构建文件，这里必须删掉
+          # 若某版模板改成生成 Groovy 构建脚本，会与本仓库的 Kotlin DSL 版
+          # 同名共存并报错，这里统一清掉 Groovy 版
           rm -f android/build.gradle android/app/build.gradle android/settings.gradle
           chmod +x android/gradlew
           echo "--- 关键文件确认 ---"
           ls android/settings.gradle.kts android/app/build.gradle.kts android/gradlew android/local.properties
           grep -n "android:label" android/app/src/main/AndroidManifest.xml
+          grep -n "compileSdk" android/app/build.gradle.kts
 
       - name: 拉取依赖
         run: flutter pub get

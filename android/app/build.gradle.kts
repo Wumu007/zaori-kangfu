@@ -20,7 +20,10 @@ if (keystorePropertiesFile.exists()) {
 android {
     // 必须与 MainActivity.kt 的 package 一致，否则启动即崩溃
     namespace = "com.medreminder.med_reminder"
-    compileSdk = 34
+    // compileSdk 只影响「能编译哪些 API」；插件（flutter_tts 4.2.x）要求 36，
+    // 定低了 AGP 会直接报 "requires compileSdk 36"。targetSdk 仍留在 34，
+    // 避免 Android 15+ 的强制 edge-to-edge 改动打乱现有页面布局。
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

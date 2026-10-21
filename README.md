@@ -3,8 +3,8 @@
 到点提醒吃药 + 一键打卡 + 语音口述录入。纯本机存储，不注册、不联网、不上传健康数据。
 
 - 界面方案：Ardot「早日康复 App · V1 界面设计」(5 屏：今日 / 聆听 / 确认 / 锁屏通知 / 家属查看)
-- 技术栈：Flutter 3.22+，sqflite + flutter_local_notifications + speech_to_text + flutter_tts
-- 包名：`com.medreminder.med_reminder`，`minSdk 23` / `targetSdk 34`
+- 技术栈：Flutter（CI 跟随 stable 通道），sqflite + flutter_local_notifications + speech_to_text + flutter_tts
+- 包名：`com.medreminder.med_reminder`，`minSdk 23` / `compileSdk 36` / `targetSdk 34`
 
 ---
 
@@ -18,9 +18,10 @@ med_reminder/
 ├── docs/
 │   └── APK打包指南.md                   从零到出 APK 的完整步骤（含签名与国产 ROM 设置）
 ├── android/                            只放「必须手写」的 Android 配置
+│   ├── gradle.properties               构建内存 / AndroidX / 并行开关
 │   ├── key.properties.example          签名配置模板（复制为 key.properties）
 │   └── app/
-│       ├── build.gradle.kts            包名/签名/脱糖/R8/压缩资源
+│       ├── build.gradle.kts            包名/compileSdk/签名/脱糖/R8
 │       ├── proguard-rules.pro          通知与语音插件的 keep 规则
 │       └── src/main/
 │           ├── AndroidManifest.xml     通知、精确闹钟、开机重排、录音等权限
@@ -106,7 +107,7 @@ med_reminder/
 ## 四、本地运行
 
 ```bash
-# 0. 需要 Flutter 3.22+ / JDK 17 / Android SDK 34
+# 0. 需要 Flutter（stable）/ JDK 17 / Android SDK 36
 flutter doctor -v
 
 # 1. 生成缺失的平台目录（本仓库只带了必须手写的 android 配置）
@@ -122,7 +123,9 @@ flutter test
 flutter run -d <deviceId>
 ```
 
-> 打包成 APK 的完整步骤见 **[docs/APK打包指南.md](docs/APK打包指南.md)**。
+> **不想装工具链？** 直接推到 GitHub，`.github/workflows/android-apk.yml` 会自动
+> 编出 `app-release.apk`，在 Actions 运行页底部的 **Artifacts** 下载即可，约 5–8 分钟。
+> 打包成 APK 的完整本地步骤见 **[docs/APK打包指南.md](docs/APK打包指南.md)**。
 
 ---
 

@@ -2,9 +2,9 @@ import 'package:flutter/foundation.dart';
 
 import '../models/day_slot.dart';
 import '../models/medication.dart';
-import 'app_settings.dart';
-import 'medication_repository.dart';
-import 'reminder_scheduler.dart';
+import '../services/app_settings.dart';
+import '../services/medication_repository.dart';
+import '../services/reminder_scheduler.dart';
 
 /// 全局状态（V1 用 ChangeNotifier，不引第三方状态库）
 ///

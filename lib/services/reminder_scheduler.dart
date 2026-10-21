@@ -122,6 +122,10 @@ class ReminderScheduler {
         when,
         _details(med, AppSettings.instance.snoozeMinutes),
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        // 17.x 起必填：用绝对时间解释 scheduledDate，
+        // 不传会直接编译失败，而不是运行时才报错
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
         matchDateTimeComponents: DateTimeComponents.time,
         payload: _payload(med, hm),
       );
@@ -150,6 +154,8 @@ class ReminderScheduler {
       when,
       _details(null, minutes),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
       payload: jsonEncode({'med': medicationId, 'hm': hm}),
     );
   }
@@ -168,11 +174,12 @@ class ReminderScheduler {
           med?.notificationBody ?? '',
           contentTitle: '该吃药了',
         ),
-        actions: const <AndroidNotificationAction>[
+        // 注意：这里不能是 const 列表——「延后 N 分钟」的文案是运行时插值的
+        actions: <AndroidNotificationAction>[
           // showsUserInterface: true —— 点「已服用」会把 App 带到前台，
           // 让老人看到「已记录」的绿色大勾，心理上更踏实；
           // 同时避免后台 isolate 写库的复杂性与不确定性。
-          AndroidNotificationAction(NotificationActionIds.taken, '已服用',
+          const AndroidNotificationAction(NotificationActionIds.taken, '已服用',
               showsUserInterface: true, cancelNotification: true),
           // 延后时长跟「我的 → 通知里延后多久」联动，默认 10 分钟
           AndroidNotificationAction(NotificationActionIds.snooze, '延后$snoozeMinutes分钟',
