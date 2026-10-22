@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/medication.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_icons.dart';
 import '../widgets/ui_kit.dart';
 import 'export_flow.dart';
 import 'medication_edit_page.dart';
@@ -25,7 +26,7 @@ class MedicationListPage extends StatelessWidget {
 
     return Scaffold(
       // 内嵌在 Tab 里时不能有第二个 Scaffold 的 Material 阴影层，统一白底即可
-      backgroundColor: AppColors.bg,
+      backgroundColor: AppColors.groupedBg,
       body: SafeArea(
         child: AnimatedBuilder(
           animation: state,
@@ -42,7 +43,7 @@ class MedicationListPage extends StatelessWidget {
                   onBack: embedded ? null : () => Navigator.of(context).pop(),
                   trailing: TextButton.icon(
                     onPressed: () => _add(context),
-                    icon: const Icon(Icons.add_rounded, size: 18),
+                    icon: const Icon(AppIcons.add, size: 18),
                     label: const Text(
                       '添加',
                       style: TextStyle(fontSize: AppText.caption),
@@ -92,7 +93,7 @@ class MedicationListPage extends StatelessWidget {
                         child: TextButton.icon(
                           onPressed: () => ExportFlow.medications(context),
                           icon: const Icon(
-                            Icons.ios_share_rounded,
+                            AppIcons.exportFile,
                             size: 16,
                             color: AppColors.sub,
                           ),
@@ -123,7 +124,7 @@ class MedicationListPage extends StatelessWidget {
                       Expanded(
                         child: GhostPill(
                           label: '键盘添加',
-                          icon: Icons.keyboard_alt_outlined,
+                          icon: AppIcons.keyboard,
                           onTap: () => _add(context),
                         ),
                       ),
@@ -138,29 +139,20 @@ class MedicationListPage extends StatelessWidget {
     );
   }
 
-  Widget _sectionTitle(String title, String trailing) => Row(
-        children: <Widget>[
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: AppText.bodySm,
-              fontWeight: FontWeight.w600,
-              color: AppColors.ink,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            trailing,
-            style: const TextStyle(fontSize: AppText.caption, color: AppColors.muted),
-          ),
-        ],
+  Widget _sectionTitle(String title, String trailing) => SectionHeader(
+        title,
+        padding: const EdgeInsets.fromLTRB(2, 4, 2, 8),
+        trailing: Text(
+          trailing,
+          style: const TextStyle(fontSize: AppText.caption, color: AppColors.muted),
+        ),
       );
 
   Widget _tipCard(String text) => AppCard(
         padding: const EdgeInsets.all(14),
         child: Row(
           children: <Widget>[
-            const Icon(Icons.info_outline_rounded, size: 18, color: AppColors.faint),
+            const Icon(AppIcons.info, size: 18, color: AppColors.faint),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -179,7 +171,7 @@ class MedicationListPage extends StatelessWidget {
   Widget _empty(BuildContext context) => Padding(
         padding: const EdgeInsets.only(top: 40),
         child: EmptyState(
-          icon: Icons.medication_outlined,
+          icon: AppIcons.medication,
           title: '还没有药品',
           message: '用「语音添加」说一句，或用「键盘添加」逐项填写。\n'
               '添加后每天到点会收到提醒。',
@@ -210,6 +202,7 @@ class _MedCard extends StatelessWidget {
     final DateTime now = DateTime.now();
 
     return AppCard(
+      shadow: true,
       child: InkWell(
         onTap: () => _edit(context),
         child: Padding(
@@ -220,6 +213,18 @@ class _MedCard extends StatelessWidget {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
+                  // V1.4.0：药品名左侧加统一底板图标，卡片有「识别符号」
+                  Opacity(
+                    opacity: med.enabled ? 1 : 0.45,
+                    child: AppIconTile(
+                      AppIcons.medication,
+                      tone: med.enabled
+                          ? AppIconTone.blue
+                          : AppIconTone.gray,
+                      size: 36,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -272,15 +277,15 @@ class _MedCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 8),
-              _meta(Icons.schedule_rounded, med.scheduleText),
+              _meta(AppIcons.schedule, med.scheduleText),
               const SizedBox(height: 5),
               _meta(
-                med.isOngoing ? Icons.all_inclusive_rounded : Icons.event_rounded,
+                med.isOngoing ? AppIcons.repeat : AppIcons.calendar,
                 med.periodText,
               ),
               if (med.note != null && med.note!.isNotEmpty) ...<Widget>[
                 const SizedBox(height: 5),
-                _meta(Icons.restaurant_rounded, med.note!),
+                _meta(AppIcons.document, med.note!),
               ],
               const SizedBox(height: 4),
               Row(
@@ -304,7 +309,7 @@ class _MedCard extends StatelessWidget {
                   const Spacer(),
                   IconButton(
                     onPressed: () => _delete(context),
-                    icon: const Icon(Icons.delete_outline_rounded,
+                    icon: const Icon(AppIcons.delete,
                         size: 20, color: AppColors.danger),
                     tooltip: '删除',
                   ),

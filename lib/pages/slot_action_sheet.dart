@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/day_slot.dart';
 import '../models/medication.dart';
+import '../services/medication_repository.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui_kit.dart';
@@ -71,7 +72,11 @@ Future<void> openSlotActionSheet(BuildContext context, DaySlot slot) async {
                 Navigator.of(ctx).pop();
                 await state.markTaken(slot);
                 if (!context.mounted) return;
-                _toast(context, '已记录：${slot.med.name}', onUndo: () => state.undo(slot));
+                // V1.4.0：撤销前先看库里还有没有记录。
+                // 用户在 4 秒内重复点「点错了」时，第二次直接当作已完成，
+                // 不再多删一次 —— 之前正是这多删的一次造成「自己回退」。
+                _toast(context, '已记录：${slot.med.name}',
+                    onUndo: () => state.undo(slot));
               },
             ),
             ListTile(
@@ -139,14 +144,27 @@ Future<void> openSlotActionSheet(BuildContext context, DaySlot slot) async {
 /// 为什么打钩只做「已服药 / 撤销」两态：这一列的图标是勾，
 /// 勾的功能就该是「吃了」。跳过、稍后提醒是「不常规的操作」，
 /// 放到点整行出来的面板里，避免误触。
+///
+/// V1.4.0：判断当前是「该记」还是「该撤」时，读**库里**的真实状态，
+/// 而不是 [slot.taken]。列表可能刚被 refresh 重建过，而传进来的
+/// [slot] 是上一帧的对象，两者不一致时就会出现「点了已服用又跳回去」。
 Future<void> toggleTaken(BuildContext context, DaySlot slot) async {
   final AppState state = AppState.instance;
-  if (slot.taken) {
+  final existing =
+      await MedicationRepository.instance.logOf(slot.med.id, slot.planned);
+
+  if (!context.mounted) return;
+
+  // 只有「当前确实是已服药」才把这次点击当成撤销。
+  // 已跳过 / 稍后提醒这两种记录也算「有记录」，但此时用户点勾的意图
+  // 是「改成吃了」，不该反而把记录删掉。
+  if (existing != null && existing.status == IntakeStatus.taken) {
     await state.undo(slot);
     if (!context.mounted) return;
     _toast(context, '已撤销：${slot.med.name}');
     return;
   }
+
   await state.markTaken(slot);
   if (!context.mounted) return;
   _toast(context, '已记录：${slot.med.name}', onUndo: () => state.undo(slot));

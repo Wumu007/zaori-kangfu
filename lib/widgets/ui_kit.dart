@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/medication.dart';
@@ -18,6 +20,9 @@ class AppCard extends StatelessWidget {
     this.padding = EdgeInsets.zero,
     this.clip = true,
     this.color = AppColors.bg,
+    this.radius,
+    this.border = true,
+    this.shadow = false,
   });
 
   final Widget child;
@@ -27,6 +32,15 @@ class AppCard extends StatelessWidget {
   final bool clip;
   final Color color;
 
+  /// 自定义圆角（默认 [AppRadius.card]）
+  final double? radius;
+
+  /// 是否画描边。iOS 分组列表常用「无描边 + 极淡阴影」
+  final bool border;
+
+  /// 是否加极淡投影（iOS 卡片浮起感，克制使用）
+  final bool shadow;
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -34,26 +48,39 @@ class AppCard extends StatelessWidget {
       clipBehavior: clip ? Clip.antiAlias : Clip.none,
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(AppRadius.card),
-        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(radius ?? AppRadius.card),
+        border: border ? Border.all(color: AppColors.line, width: 0.5) : null,
+        boxShadow: shadow
+            ? const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x0A101828),
+                  blurRadius: 12,
+                  offset: Offset(0, 2),
+                ),
+              ]
+            : null,
       ),
       child: child,
     );
   }
 }
 
-/// 列表分隔线：左侧缩进 16，和卡片内边距对齐
+/// 列表分隔线：发丝线，左侧缩进与行内图标对齐
+///
+/// V1.4.0：1px → 0.5px，颜色换成更淡的 [AppColors.hairline]，
+/// 这是 iOS separator 的观感；缩进默认 65（16 内边距 + 36 图标 + 13 间距），
+/// 让分隔线从文字左侧开始，而不是贯穿整行。
 class AppDivider extends StatelessWidget {
-  const AppDivider({super.key, this.indent = 16});
+  const AppDivider({super.key, this.indent = 65});
 
   final double indent;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 1,
+      height: 0.5,
       margin: EdgeInsets.only(left: indent),
-      color: AppColors.divider,
+      color: AppColors.hairline,
     );
   }
 }
@@ -582,33 +609,97 @@ class StatusBadge extends StatelessWidget {
 
 /// 全局统一的轻提示（SnackBar）
 ///
-/// 【Bug 修复】V1.2 反馈「黑色『已记录：XXX，点错了』提示不消失」：
-/// 各页自己 showSnackBar，有的没写 duration（依赖默认 4 秒，部分 ROM 上
-/// 与浮动 behavior 组合后表现成「一直挂着」），有的连续触发时新条目排队
-/// 旧条目不清，视觉上就是「关不掉的黑条」。
+/// ═══════════════════════════════════════════════════════════════════
+/// V1.4.0 修复「黑色提示框只有点『点错了』才消失」
+/// ═══════════════════════════════════════════════════════════════════
 ///
-/// 统一规则：
-/// - 弹出前先 [ScaffoldMessenger.clearSnackBars]，同一时刻只有一条；
-/// - 无撤销动作 2 秒自动消失；带「点错了」撤销动作 4 秒（给反应时间）。
+/// 真实机制（不是「定时器不跑」，而是 SnackBar 的 dismiss 语义）：
+/// 1. `SnackBarAction.onPressed` 被 flutter 包了一层：
+///    先调用户回调，再调 `ScaffoldMessenger.hideCurrentSnackBar()`；
+/// 2. 但 `hideCurrentSnackBar()` 走的是**动画**移除，且带 reversal 检查：
+///    如果此刻 `_snackBarController` 正在 `forward`（入场动画没播完），
+///    `hideCurrentSnackBar(reason: action)` 会**再触发一次 reverse**，
+///    在部分 ROM 的高刷屏 + 降低动画时长设置下，这个 reverse 会被
+///    吞掉（`isDismissed` 提前为 true），于是 SnackBar 停在半透明状态不走；
+/// 3. 更关键的是：`duration` 计时器绑在 `SnackBar` 的 `animation` 上，
+///    只有入场动画 `completed` 后才开始计时。若入场被后续的
+///    `clearSnackBars()` 打断，计时器**永远不会启动** —— 于是永久挂着。
+///
+/// 为什么「点错了」能去掉：action 的 hide 走的是另一条路径，绕过了
+/// 那个没启动的计时器。这正好对上用户观察到的现象。
+///
+/// 修复：
+/// - 用模块级 [_killTimer] 自己托管计时，不依赖 SnackBar 的 duration 机制；
+/// - 同一条文本在 300ms 内重复触发时直接忽略，防止连点造成堆叠；
+/// - 撤销动作**只能执行一次**（[_UndoOnce]），防止重复撤销导致状态回退。
 void showAppToast(
   BuildContext context,
   String text, {
   VoidCallback? onUndo,
 }) {
-  final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context)
-    ..clearSnackBars();
+  final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+
+  // 连点去重：同一句话 300ms 内第二次触发直接丢掉
+  final DateTime now = DateTime.now();
+  if (_lastToastText == text &&
+      _lastToastAt != null &&
+      now.difference(_lastToastAt!) < const Duration(milliseconds: 300)) {
+    return;
+  }
+  _lastToastText = text;
+  _lastToastAt = now;
+
+  // 先清旧条目（这时旧条目可能还在入场动画里，clear 会把它强行移除）
+  messenger.clearSnackBars();
+
+  final _UndoOnce undo = _UndoOnce(onUndo);
+
   messenger.showSnackBar(
     SnackBar(
       content: Text(text, style: const TextStyle(fontSize: AppText.caption)),
-      duration: Duration(seconds: onUndo == null ? 2 : 4),
+      // duration 只是「兜底」：真正控制消失的是下面的外部计时器。
+      // 之所以不能只靠它，是因为它的计时器绑在入场动画完成事件上，
+      // 入场被 clearSnackBars 打断时计时器不启动 → 永久停留。
+      duration: Duration(seconds: onUndo == null ? 3 : 5),
       behavior: SnackBarBehavior.floating,
+      dismissDirection: DismissDirection.horizontal,
       action: onUndo == null
           ? null
           : SnackBarAction(
               label: '点错了',
               textColor: Colors.white,
-              onPressed: onUndo,
+              onPressed: undo.run,
             ),
     ),
   );
+
+  // 外部计时器：不管入场动画有没有正常播完，到点一律移除。
+  // 这是「黑条不消失」的最终兜底 —— 与 SnackBar 内部状态机完全解耦。
+  _killTimer?.cancel();
+  _killTimer = Timer(
+    Duration(seconds: onUndo == null ? 3 : 5),
+    () => messenger.hideCurrentSnackBar(),
+  );
+}
+
+Timer? _killTimer;
+String? _lastToastText;
+DateTime? _lastToastAt;
+
+/// 保证撤销回调只生效一次
+///
+/// 为什么必须要：SnackBarAction 被快速连点两次时，`undo` 会执行两次。
+/// 第一次把「已服药」记录删掉（界面变回未记录）；
+/// 第二次再删（此时记录已不存在，但会触发一次额外的 refresh + 重建列表），
+/// 用户看到的就是「刚点已服用，又自己退回未服用」。
+class _UndoOnce {
+  _UndoOnce(this._action);
+  final VoidCallback? _action;
+  bool _done = false;
+
+  void run() {
+    if (_done) return;
+    _done = true;
+    _action?.call();
+  }
 }

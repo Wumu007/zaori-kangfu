@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import 'app.dart';
 import 'models/medication.dart';
@@ -32,12 +31,18 @@ Future<void> main() async {
   await ReminderScheduler.instance
       .scheduleAll(await MedicationRepository.instance.activeMedications());
 
-  // 文件读写权限（V1.3 用户要求：安装/启动时申请一次）。
-  // 只影响 Android 10 及以下的旧式存储；11+ 的系统「保存到」走 SAF 不需要它。
-  // 申请失败不阻塞启动 —— 导出还有应用专属目录兜底。
-  try {
-    await Permission.storage.request();
-  } catch (_) {}
+  // V1.4.0：**不再申请存储权限**。
+  //
+  // 旧版在这里 `Permission.storage.request()`，配合导出时的
+  // 「所选位置可能没有写入权限」文案，让用户以为导出失败是权限问题，
+  // 于是反复去系统设置里开权限 —— 但真实原因与权限无关：
+  //   1. Android 13+ 的 `Permission.storage` 恒为 denied（细分成了
+  //      READ_MEDIA_IMAGES/VIDEO/AUDIO，且与「写文件」无关）；
+  //   2. `getSaveLocation()` 在 Android 上根本没实现，调用必抛异常。
+  //
+  // 现在的导出路径是：写应用自己的目录（不需要任何权限）→
+  // 系统分享面板把文件交给微信/文件管理。全程不需要存储权限，
+  // 所以这里连带把那句会误导人的系统提示一起去掉了。
 
   runApp(const MedReminderApp());
 }

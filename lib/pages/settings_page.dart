@@ -5,6 +5,7 @@ import '../services/backup_service.dart';
 import '../services/reminder_scheduler.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_icons.dart';
 import '../widgets/ui_kit.dart';
 import 'export_flow.dart';
 import 'medication_list_page.dart';
@@ -35,23 +36,30 @@ class SettingsPage extends StatelessWidget {
         return Column(
           children: <Widget>[
             Padding(
-              padding: const EdgeInsets.fromLTRB(AppSpace.pageX, 6, AppSpace.pageX, 12),
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpace.pageX, 10, AppSpace.pageX, 14),
               child: Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: <Widget>[
                   const Text(
                     '我的',
                     style: TextStyle(
-                      fontSize: AppText.h1,
+                      fontSize: AppText.largeTitle,
                       fontWeight: FontWeight.w700,
                       color: AppColors.ink,
+                      letterSpacing: -0.5,
+                      height: 1.15,
                     ),
                   ),
                   const Spacer(),
-                  Text(
-                    '${state.meds.length} 种药在提醒',
-                    style: const TextStyle(
-                      fontSize: AppText.caption,
-                      color: AppColors.muted,
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      '${state.meds.length} 种药在提醒',
+                      style: const TextStyle(
+                        fontSize: AppText.caption,
+                        color: AppColors.muted,
+                      ),
                     ),
                   ),
                 ],
@@ -66,9 +74,13 @@ class SettingsPage extends StatelessWidget {
                   28,
                 ),
                 children: <Widget>[
+                  // ---- 分组 1：药品 ----
+                  const SectionHeader('用药'),
                   AppCard(
-                    child: _NavRow(
-                      icon: Icons.medication_outlined,
+                    shadow: true,
+                    child: AppNavRow(
+                      icon: AppIcons.medication,
+                      tone: AppIconTone.blue,
                       title: '药品管理',
                       subtitle: '添加、编辑、删除药品；可停止提醒并保留历史',
                       onTap: () => Navigator.of(context).push(
@@ -78,63 +90,85 @@ class SettingsPage extends StatelessWidget {
                       ),
                     ),
                   ),
+                  const SizedBox(height: AppSpace.gapLg),
+
+                  // ---- 分组 2：提醒 ----
+                  const SectionHeader('提醒'),
+                  AppCard(
+                    shadow: true,
+                    child: AppNavRow(
+                      icon: state.notificationGranted
+                          ? AppIcons.notification
+                          : AppIcons.reminderOff,
+                      tone: state.notificationGranted
+                          ? AppIconTone.green
+                          : AppIconTone.orange,
+                      title: '通知与闹钟权限',
+                      subtitle: state.notificationGranted
+                          ? '已允许，到点会响'
+                          : '未允许，到点可能不响 —— 点这里去开',
+                      onTap: () => _openPermissionSheet(context),
+                    ),
+                  ),
                   const SizedBox(height: AppSpace.gap),
                   AppCard(
+                    shadow: true,
                     child: Column(
                       children: <Widget>[
-                        SwitchListTile.adaptive(
+                        _ToneSwitchTile(
+                          icon: AppIcons.text,
+                          tone: AppIconTone.purple,
                           value: state.settings.largeText,
                           onChanged: state.settings.setLargeText,
-                          activeTrackColor: AppColors.primary,
-                          title: const Text(
-                            '大字号',
-                            style: TextStyle(
-                              fontSize: AppText.bodySm,
-                              fontWeight: FontWeight.w500,
-                              color: AppColors.ink,
-                            ),
-                          ),
-                          subtitle: const Text(
-                            '整体放大 18%，看不清时再打开',
-                            style: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
-                          ),
+                          title: '大字号',
+                          subtitle: '整体放大 18%，看不清时再打开',
                         ),
                         const AppDivider(),
-                        SwitchListTile.adaptive(
+                        _ToneSwitchTile(
+                          icon: AppIcons.shield,
+                          tone: AppIconTone.green,
                           value: state.settings.confirmBeforeSkip,
                           onChanged: state.settings.setConfirmBeforeSkip,
-                          activeTrackColor: AppColors.primary,
-                          title: const Text(
-                            '跳过本次前再确认',
-                            style: TextStyle(
-                              fontSize: AppText.bodySm,
-                              fontWeight: FontWeight.w500,
-                              color: AppColors.ink,
-                            ),
-                          ),
-                          subtitle: const Text(
-                            '防止误触把一顿药记成「已跳过」',
-                            style: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
-                          ),
+                          title: '跳过本次前再确认',
+                          subtitle: '防止误触把一顿药记成「已跳过」',
                         ),
                         const AppDivider(),
                         Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
-                              const Text(
-                                '通知里「稍后提醒」多久',
-                                style: TextStyle(
-                                  fontSize: AppText.bodySm,
-                                  fontWeight: FontWeight.w500,
-                                  color: AppColors.ink,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              const Text(
-                                '点通知上的「稍后提醒」后，隔多久再响一次',
-                                style: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
+                              Row(
+                                children: <Widget>[
+                                  const AppIconTile(
+                                    AppIcons.snooze,
+                                    tone: AppIconTone.orange,
+                                    size: 30,
+                                  ),
+                                  const SizedBox(width: 11),
+                                  Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: const <Widget>[
+                                      Text(
+                                        '通知里「稍后提醒」多久',
+                                        style: TextStyle(
+                                          fontSize: AppText.bodySm,
+                                          fontWeight: FontWeight.w500,
+                                          color: AppColors.ink,
+                                        ),
+                                      ),
+                                      SizedBox(height: 2),
+                                      Text(
+                                        '点通知上的「稍后提醒」后，隔多久再响一次',
+                                        style: TextStyle(
+                                          fontSize: AppText.tiny,
+                                          color: AppColors.muted,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
                               const SizedBox(height: 12),
                               // 关键修复：Wrap 布局，宽度自适应 + 自动换行
@@ -150,46 +184,36 @@ class SettingsPage extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(height: AppSpace.gap),
+                  const SizedBox(height: AppSpace.gapLg),
+
+                  // ---- 分组 3：数据 ----
+                  const SectionHeader('数据与说明'),
                   AppCard(
-                    child: _NavRow(
-                      icon: state.notificationGranted
-                          ? Icons.notifications_active_outlined
-                          : Icons.notifications_off_outlined,
-                      iconColor: state.notificationGranted
-                          ? AppColors.success
-                          : AppColors.warn,
-                      title: '通知与闹钟权限',
-                      subtitle: state.notificationGranted
-                          ? '已允许，到点会响'
-                          : '未允许，到点可能不响 —— 点这里去开',
-                      onTap: () => _openPermissionSheet(context),
-                    ),
-                  ),
-                  const SizedBox(height: AppSpace.gap),
-                  AppCard(
+                    shadow: true,
                     child: Column(
                       children: <Widget>[
-                        _NavRow(
-                          icon: Icons.description_outlined,
-                          title: '免责声明',
-                          subtitle: '本 App 只做提醒与记录',
-                          onTap: () => _showDisclaimer(context),
-                        ),
-                        const AppDivider(),
-                        _NavRow(
-                          icon: Icons.storage_outlined,
+                        AppNavRow(
+                          icon: AppIcons.backup,
+                          tone: AppIconTone.purple,
                           title: '备份与恢复',
                           subtitle: '换手机时把药品和记录完整带走',
                           onTap: () => _openDataSheet(context),
                         ),
+                        const AppDivider(),
+                        AppNavRow(
+                          icon: AppIcons.info,
+                          tone: AppIconTone.gray,
+                          title: '免责声明',
+                          subtitle: '本 App 只做提醒与记录',
+                          onTap: () => _showDisclaimer(context),
+                        ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 22),
+                  const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.3.0 · 本地版',
+                      '早日康复 v1.4.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -765,24 +789,28 @@ class _DataSheetState extends State<_DataSheet> {
             ),
             const SizedBox(height: 16),
             AppCard(
+              shadow: true,
               child: Column(
                 children: <Widget>[
                   _actionRow(
-                    icon: Icons.cloud_upload_outlined,
+                    icon: AppIcons.backup,
+                    tone: AppIconTone.blue,
                     title: '导出完整备份',
                     desc: '药品 + 全部服药记录，存成一个文件',
                     onTap: _busy ? null : () => ExportFlow.backup(context),
                   ),
                   const AppDivider(),
                   _actionRow(
-                    icon: Icons.cloud_download_outlined,
+                    icon: AppIcons.restore,
+                    tone: AppIconTone.green,
                     title: '从备份恢复',
                     desc: '在新手机上选这份文件，只补缺的，不覆盖已有的',
                     onTap: _busy ? null : _import,
                   ),
                   const AppDivider(),
                   _actionRow(
-                    icon: Icons.table_chart_outlined,
+                    icon: AppIcons.table,
+                    tone: AppIconTone.purple,
                     title: '导出服药记录表格',
                     desc: 'CSV，手机 WPS 就能打开看',
                     onTap: _busy ? null : () => ExportFlow.records(context),
@@ -800,7 +828,7 @@ class _DataSheetState extends State<_DataSheet> {
               child: const Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  Icon(Icons.info_outline_rounded, size: 18, color: AppColors.warn),
+                  Icon(AppIcons.info, size: 18, color: AppColors.warn),
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -841,15 +869,19 @@ class _DataSheetState extends State<_DataSheet> {
     required String title,
     required String desc,
     required VoidCallback? onTap,
+    AppIconTone tone = AppIconTone.blue,
   }) {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+        padding: const EdgeInsets.fromLTRB(16, 12, 14, 12),
         child: Row(
           children: <Widget>[
-            Icon(icon, size: 20, color: onTap == null ? AppColors.faint : AppColors.sub),
-            const SizedBox(width: 12),
+            Opacity(
+              opacity: onTap == null ? 0.45 : 1,
+              child: AppIconTile(icon, tone: tone),
+            ),
+            const SizedBox(width: 13),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -865,13 +897,17 @@ class _DataSheetState extends State<_DataSheet> {
                   const SizedBox(height: 3),
                   Text(
                     desc,
-                    style: const TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
+                    style: const TextStyle(
+                      fontSize: AppText.tiny,
+                      height: 1.45,
+                      color: AppColors.muted,
+                    ),
                   ),
                 ],
               ),
             ),
             if (onTap != null)
-              const Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.faint)
+              const Icon(AppIcons.chevron, size: 18, color: AppColors.faint)
             else
               const SizedBox(
                 width: 16,
@@ -891,32 +927,37 @@ class _DataSheetState extends State<_DataSheet> {
       '${d.minute.toString().padLeft(2, '0')}';
 }
 
-/// 带图标的一行入口
-class _NavRow extends StatelessWidget {
-  const _NavRow({
+/// 开关行：左图标底板 + 标题/副标题 + iOS 风格开关
+///
+/// V1.4.0：替代原来的 `SwitchListTile.adaptive` —— 后者没有图标位，
+/// 与同卡片里的导航行（有图标底板）视觉不对齐。
+class _ToneSwitchTile extends StatelessWidget {
+  const _ToneSwitchTile({
     required this.icon,
+    required this.tone,
+    required this.value,
+    required this.onChanged,
     required this.title,
     required this.subtitle,
-    required this.onTap,
-    this.iconColor = AppColors.sub,
   });
 
   final IconData icon;
+  final AppIconTone tone;
+  final bool value;
+  final ValueChanged<bool> onChanged;
   final String title;
   final String subtitle;
-  final VoidCallback onTap;
-  final Color iconColor;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: onTap,
+      onTap: () => onChanged(!value),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+        padding: const EdgeInsets.fromLTRB(16, 12, 14, 12),
         child: Row(
           children: <Widget>[
-            Icon(icon, size: 20, color: iconColor),
-            const SizedBox(width: 12),
+            AppIconTile(icon, tone: tone),
+            const SizedBox(width: 13),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -932,12 +973,21 @@ class _NavRow extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     subtitle,
-                    style: const TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
+                    style: const TextStyle(
+                      fontSize: AppText.tiny,
+                      height: 1.45,
+                      color: AppColors.muted,
+                    ),
                   ),
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.faint),
+            const SizedBox(width: 8),
+            Switch.adaptive(
+              value: value,
+              onChanged: onChanged,
+              activeTrackColor: AppColors.success,
+            ),
           ],
         ),
       ),

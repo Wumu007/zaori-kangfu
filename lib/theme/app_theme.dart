@@ -8,6 +8,12 @@ import 'package:flutter/material.dart';
 /// ============================================================================
 
 /// 颜色
+///
+/// V1.4.0 改版：在保留主色体系的前提下，向 iOS 的「系统色 + 中性灰阶」靠拢。
+/// 关键是两点：
+/// 1. 背景分层更明显（iOS 用 systemGroupedBackground 衬托卡片），
+///    卡片纯白 + 更淡的描边，视觉上「浮」在灰底上；
+/// 2. 分割线极细（0.5px 发丝线），接近 iOS 的 separator。
 class AppColors {
   AppColors._();
 
@@ -27,7 +33,26 @@ class AppColors {
   static const Color line = Color(0xFFEDEFF2); // 卡片描边
   static const Color divider = Color(0xFFF1F3F5); // 列表分隔线
   static const Color surface = Color(0xFFF7F8FA); // 浅灰底（转写卡、胶囊底）
-  static const Color bg = Color(0xFFFFFFFF); // 页面底色
+  static const Color bg = Color(0xFFFFFFFF); // 卡片/页面底色
+
+  // ---- V1.4.0 iOS 风格补充 ----
+
+  /// 分组页面底色（iOS systemGroupedBackground 浅色版）
+  /// 比 surface 再淡一点，让白卡片能"浮"起来
+  static const Color groupedBg = Color(0xFFF2F4F7);
+
+  /// 发丝分割线：0.5px，iOS separator 的观感
+  static const Color hairline = Color(0xFFE5E8EC);
+
+  /// 毛玻璃底层色（配合 BackdropFilter 用）
+  static const Color glassTint = Color(0xF2FFFFFF);
+
+  /// 图标底色板：给不同功能小图标一套统一的柔和底色
+  static const Color iconBlueBg = Color(0xFFEAF0FF);
+  static const Color iconGreenBg = Color(0xFFE9F8F0);
+  static const Color iconOrangeBg = Color(0xFFFFF2E5);
+  static const Color iconPurpleBg = Color(0xFFF1EDFF);
+  static const Color iconGrayBg = Color(0xFFF0F2F5);
 }
 
 /// 字号
@@ -46,21 +71,33 @@ class AppText {
   static const double caption = 13; // 字段名、辅助说明
   static const double tiny = 12; // 徽标、脚注
   static const double tab = 11; // 底部 Tab 文字
+
+  // ---- V1.4.0 iOS 风格：大标题（iOS Large Title） ----
+  static const double largeTitle = 32;
+  static const double title2 = 20;
 }
 
 /// 圆角与间距
+///
+/// V1.4.0 向 iOS 靠：卡片圆角加大（14 → 18），按钮改为连续圆角胶囊。
 class AppRadius {
   AppRadius._();
-  static const double card = 14;
-  static const double button = 14;
-  static const double pill = 22;
-  static const double badge = 8;
+
+  static const double card = 18; // 卡片（iOS insetGrouped 风格）
+  static const double cardSm = 14; // 小卡片、内嵌块
+  static const double button = 14; // 按钮
+  static const double pill = 999; // 完全胶囊
+  static const double badge = 8; // 徽标
+  static const double iconTile = 12; // 图标底板
 }
 
 class AppSpace {
   AppSpace._();
+
   static const double pageX = 20; // 页面左右安全边距
   static const double gap = 14; // 模块间距
+  static const double gapLg = 22; // 大模块间距（iOS 更爱留白）
+  static const double sectionTop = 28; // 分组标题上方留白
 }
 
 /// 全局 ThemeData
@@ -77,7 +114,8 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
-      scaffoldBackgroundColor: AppColors.bg,
+      // V1.4.0：页面底色改为 iOS 分组灰，卡片用纯白衬托层次
+      scaffoldBackgroundColor: AppColors.groupedBg,
       splashFactory: InkSparkle.splashFactory,
       // 中文字体走系统（Android: Noto Sans CJK / iOS: PingFang），
       // 不打包字体文件，APK 体积小，且各机型字形自然。
@@ -102,7 +140,7 @@ class AppTheme {
       ),
       // 统一 AppBar：白底、无阴影、16px 标题
       appBarTheme: const AppBarTheme(
-        backgroundColor: AppColors.bg,
+        backgroundColor: AppColors.groupedBg,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         centerTitle: false,
@@ -117,11 +155,48 @@ class AppTheme {
         behavior: SnackBarBehavior.floating,
         backgroundColor: AppColors.ink,
         contentTextStyle: TextStyle(fontSize: AppText.meta, color: Colors.white),
+        // iOS 观感：更大的圆角 + 轻微阴影
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(14)),
+        ),
       ),
       dividerTheme: const DividerThemeData(
-        color: AppColors.divider,
-        thickness: 1,
-        space: 1,
+        color: AppColors.hairline,
+        thickness: 0.5, // 发丝线
+        space: 0.5,
+      ),
+      // 底部弹层统一 iOS 观感：大圆角 + 白底
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: AppColors.bg,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        showDragHandle: true,
+        dragHandleColor: Color(0x33000000),
+        dragHandleSize: Size(36, 4),
+      ),
+      // 对话框：iOS 风格圆角 20
+      dialogTheme: const DialogThemeData(
+        backgroundColor: AppColors.bg,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(20)),
+        ),
+        titleTextStyle: TextStyle(
+          fontSize: AppText.h2,
+          fontWeight: FontWeight.w600,
+          color: AppColors.ink,
+        ),
+      ),
+      // 列表项：iOS 的 44+ 行高、紧凑内边距
+      listTileTheme: const ListTileThemeData(
+        iconColor: AppColors.sub,
+        titleTextStyle: TextStyle(fontSize: AppText.bodySm, color: AppColors.ink),
+        subtitleTextStyle: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
+        contentPadding: EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+        minLeadingWidth: 28,
       ),
     );
   }

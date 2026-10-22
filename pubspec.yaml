@@ -1,7 +1,7 @@
 name: med_reminder
 description: 早日康复 App（V2）—— 语音口述录入用药计划、到点本地提醒、按日期回看服药记录，纯本地、不需要登录
 publish_to: 'none'
-version: 1.3.0+4
+version: 1.4.0+5
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -33,7 +33,23 @@ dependencies:
   #
   # 为什么钉 ^1.0.3 而不是 latest：1.1.0 起要求 Flutter >= 3.35，而本项目
   # 用的是 CI 上的 stable 通道，钉住一个下界低、行为稳定的版本更保险。
+  #
+  # ⚠️ 注意：`getSaveLocation()`（SAF 保存对话框）在 **Android 上根本没有实现**，
+  # 调用必然抛 UnimplementedError。所以 Android 侧不再依赖它导文件，
+  # 只在桌面 / iOS 用。见 backup_service.dart 的类注释。
   file_selector: ^1.0.3
+
+  # 系统分享面板：把导出的文件「发到微信 / 存进手机」
+  #
+  # V1.4.0 新增。原因：Android 10+ 分区存储下，App 无法用普通路径往
+  # 「下载」目录写文件（写入会 EACCES），文件只能落到 App 自己的目录，
+  # 而那个目录「文件管理」和微信都看不到 —— 用户等于拿不到导出的东西。
+  # 走系统分享面板后：文件由插件复制到自己的 cache 再交给系统，
+  # 微信、文件管理、WPS 都能直接收到，不需要任何存储权限。
+  #
+  # 钉 ^12.0.1（而不是 13.x）：12.x 要求 Flutter >= 3.22，13.x 要 >= 3.38，
+  # 兼容面更宽；且 12.x 已经提供下面用到的 SharePlus.instance.share(ShareParams)。
+  share_plus: ^12.0.1
 
 dev_dependencies:
   flutter_test:

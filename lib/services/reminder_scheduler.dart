@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
@@ -62,6 +64,34 @@ class ReminderScheduler {
   /// 每次冷启动都会重新对齐，所以不会真的断档。
   static const int _windowDays = 30;
 
+  /// 通知渠道 id
+  ///
+  /// ═══════════════════════════════════════════════════════════════════
+  /// V1.4.0 为什么要换 id（这是「到点只通知、不响铃」的主因之一）
+  /// ═══════════════════════════════════════════════════════════════════
+  ///
+  /// Android 的 NotificationChannel **一旦创建就不能改**重要性、声音、
+  /// 震动模式 —— `createNotificationChannel()` 对已存在的同 id 渠道
+  /// 只会更新名称和描述，其余配置被系统**静默忽略**。
+  ///
+  /// 旧版用的是 `med_reminder_channel`。如果用户装过 V1.2/V1.3，
+  /// 那个渠道在系统里已经以旧配置落地了。之后无论我们在代码里把
+  /// `importance` 改成 max、把 `audioAttributesUsage` 改成 alarm，
+  /// 系统都不会理会 —— 用户手机上仍然是当初那份配置。
+  ///
+  /// 这就是「通知能收到（渠道存在）、但不出声（旧渠道 sound/importance
+  /// 不是我们要的）」的确切原因。
+  ///
+  /// 修复：换一个全新 id，让系统按**新配置**建档。
+  /// 旧 id 留给系统自行清理（用户也可以在系统设置里手动关掉）。
+  static const String _channelId = 'med_alarm_v2';
+
+  /// 旧渠道 id：仅用于「迁移时把旧渠道上的通知清掉」
+  static const String _legacyChannelId = 'med_reminder_channel';
+
+  static const String _channelName = '服药提醒（闹钟式）';
+  static const String _channelDesc = '到点像闹钟一样响铃、震动并全屏提醒服药';
+
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
 
@@ -103,21 +133,46 @@ class ReminderScheduler {
     final AndroidFlutterLocalNotificationsPlugin? androidImpl =
         _plugin.resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
+
+    // 关键：建档时就把「闹钟级」配置一次性给对，
+    // 因为系统之后不会再允许修改。
     await androidImpl?.createNotificationChannel(const AndroidNotificationChannel(
-      'med_reminder_channel',
-      '服药提醒',
-      description: '到点响铃震动并全屏提醒服药',
+      _channelId,
+      _channelName,
+      description: _channelDesc,
       importance: Importance.max,
+      // 显式指定声音：不写 sound 时部分 ROM 会建出「无声」渠道
       playSound: true,
+      sound: _alarmSound,
       enableVibration: true,
+      // 明确的震动节奏：只开 enableVibration 时有些 ROM 用默认极短震动，
+      // 老人感觉不到。这个节奏是「长-短-长」，接近闹钟手感。
+      vibrationPattern: Int64List.fromList(<int>[0, 800, 400, 800, 400, 800]),
       enableLights: true,
       // 声音走「闹钟」音量而不是「通知」音量：
       // 用户手机常年静音/震动，吃药提醒必须像闹钟一样穿透静音
       audioAttributesUsage: AudioAttributesUsage.alarm,
+      showBadge: true,
     ));
+
+    // 清理可能存在的旧渠道（有些 ROM 允许删除自定义渠道）
+    try {
+      await androidImpl?.deleteNotificationChannel(_legacyChannelId);
+    } catch (_) {
+      // 删不掉就算了，新通知不再往旧渠道发
+    }
 
     _inited = true;
   }
+
+  /// 闹钟铃声
+  ///
+  /// 用系统的「闹钟」默认铃声 URI，而不是打包一个 mp3：
+  /// 1. 不增加 APK 体积；
+  /// 2. 用户如果换过系统闹钟铃声，会跟着变，符合直觉；
+  /// 3. `content://settings/system/alarm_alert` 在所有 Android 版本上都存在。
+  static const UriAndroidNotificationSound _alarmSound =
+      UriAndroidNotificationSound('content://settings/system/alarm_alert');
 
   /// 申请通知 / 精确闹钟权限（Android 13+、Android 12+ 精确闹钟）
   ///
@@ -133,6 +188,14 @@ class ReminderScheduler {
             AndroidFlutterLocalNotificationsPlugin>();
     await android?.requestNotificationsPermission();
     await android?.requestExactAlarmsPermission();
+    // Android 14+（API 34）新增：全屏通知要单独授权，
+    // 不申请的话 fullScreenIntent: true 在锁屏时不会真正弹全屏，
+    // 只会退化成普通横幅 —— 表现为「到点只有一条通知消息」。
+    try {
+      await android?.requestFullScreenIntentPermission();
+    } catch (_) {
+      // Android 13 及以下没有这个权限入口，忽略
+    }
     final IOSFlutterLocalNotificationsPlugin? ios =
         _plugin.resolvePlatformSpecificImplementation<
             IOSFlutterLocalNotificationsPlugin>();
@@ -251,19 +314,64 @@ class ReminderScheduler {
 
   Future<void> _schedule(Medication med, DateTime when) async {
     final tz.TZDateTime tzw = tz.TZDateTime.from(when, tz.local);
-    await _plugin.zonedSchedule(
-      _idOf(med.id, when),
-      '该吃药了',
-      med.notificationBody,
-      tzw,
-      _details(med, AppSettings.instance.snoozeMinutes),
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      // 17.x 起必填：用绝对时间解释 scheduledDate
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-      payload: _payload(med, when),
-    );
+    try {
+      await _plugin.zonedSchedule(
+        _idOf(med.id, when),
+        '该吃药了',
+        med.notificationBody,
+        tzw,
+        _details(med, AppSettings.instance.snoozeMinutes),
+        // ═══════════════════════════════════════════════════════════════
+        // V1.4.0：exactAllowWhileIdle → alarmClock
+        // ═══════════════════════════════════════════════════════════════
+        //
+        // 差别在系统 API 层：
+        // - exactAllowWhileIdle 走 `setExactAndAllowWhileIdle`：
+        //   精确，但**没有闹钟语义** —— 系统在深度 Doze 时仍可能
+        //   把它当普通通知延后，且不会显示闹钟图标、不会走闹钟音量策略。
+        // - alarmClock 走 `AlarmManagerCompat.setAlarmClock(...)`：
+        //   这是真正的「闹钟」，系统会：
+        //     1. 在锁屏上显示闹钟指示，保证不被 Doze 拦截；
+        //     2. 走 STREAM_ALARM 音量流（配合 audioAttributesUsage: alarm）；
+        //     3. 国产 ROM 的省电策略对「闹钟类」放行更宽。
+        //
+        // 实测「到点只有通知消息、没有铃声」的主因就是这里用了
+        // exactAllowWhileIdle —— 通知到了，但系统不按闹钟处理。
+        androidScheduleMode: AndroidScheduleMode.alarmClock,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        payload: _payload(med, when),
+      );
+    } on PlatformException catch (e) {
+      // 精确闹钟权限被用户拒绝时插件会抛 exact_alarms_not_permitted。
+      // 此时**不能放弃排期**：退到 inexactAllowWhileIdle，
+      // 时间可能偏几分钟，但至少还会响 —— 比彻底不响好得多。
+      if (e.code == 'exact_alarms_not_permitted') {
+        _exactAlarmBlocked = true;
+        try {
+          await _plugin.zonedSchedule(
+            _idOf(med.id, when),
+            '该吃药了',
+            med.notificationBody,
+            tzw,
+            _details(med, AppSettings.instance.snoozeMinutes),
+            androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+            uiLocalNotificationDateInterpretation:
+                UILocalNotificationDateInterpretation.absoluteTime,
+            payload: _payload(med, when),
+          );
+        } catch (_) {
+          // 连不精确排期都失败，只能放弃这一条
+        }
+      }
+    } catch (_) {
+      // 其他异常（时区、参数）不应打断整批排期
+    }
   }
+
+  /// 精确闹钟是否被系统拦住过（设置页据此提示用户去开）
+  bool _exactAlarmBlocked = false;
+  bool get exactAlarmBlocked => _exactAlarmBlocked;
 
   /// 取消某个药所有已排通知（删除/停用药品时用）
   Future<void> cancelMedication(Medication med) async {
@@ -299,26 +407,56 @@ class ReminderScheduler {
 
     final tz.TZDateTime when =
         tz.TZDateTime.now(tz.local).add(Duration(minutes: minutes));
-    await _plugin.zonedSchedule(
-      _idOf(medicationId, planned) ^ 0x5f5e100,
-      title,
-      body,
-      when,
-      _detailsRaw(
-        title: title,
-        body: body,
-        snoozeMinutes: minutes,
-      ),
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-      payload: jsonEncode(<String, Object?>{
-        'med': medicationId,
-        'at': planned.toIso8601String(),
-        'name': name,
-        'body': body,
-      }),
-    );
+    try {
+      await _plugin.zonedSchedule(
+        _idOf(medicationId, planned) ^ 0x5f5e100,
+        title,
+        body,
+        when,
+        _detailsRaw(
+          title: title,
+          body: body,
+          snoozeMinutes: minutes,
+        ),
+        // 稍后提醒同样按闹钟排：用户点「稍后」是希望它真的再来叫一次
+        androidScheduleMode: AndroidScheduleMode.alarmClock,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        payload: jsonEncode(<String, Object?>{
+          'med': medicationId,
+          'at': planned.toIso8601String(),
+          'name': name,
+          'body': body,
+        }),
+      );
+    } on PlatformException catch (e) {
+      if (e.code == 'exact_alarms_not_permitted') {
+        _exactAlarmBlocked = true;
+        // 精确闹钟被拒时退到不精确：可能偏几分钟，但比彻底不响好
+        try {
+          await _plugin.zonedSchedule(
+            _idOf(medicationId, planned) ^ 0x5f5e100,
+            title,
+            body,
+            when,
+            _detailsRaw(title: title, body: body, snoozeMinutes: minutes),
+            androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+            uiLocalNotificationDateInterpretation:
+                UILocalNotificationDateInterpretation.absoluteTime,
+            payload: jsonEncode(<String, Object?>{
+              'med': medicationId,
+              'at': planned.toIso8601String(),
+              'name': name,
+              'body': body,
+            }),
+          );
+        } catch (_) {
+          // 连不精确排期都失败，只能放弃这一次
+        }
+      }
+    } catch (_) {
+      // 其他异常不应把「稍后提醒」变成崩溃
+    }
   }
 
   NotificationDetails _details(Medication med, int snoozeMinutes) =>
@@ -335,19 +473,27 @@ class ReminderScheduler {
   }) {
     return NotificationDetails(
       android: AndroidNotificationDetails(
-        'med_reminder_channel',
-        '服药提醒',
-        channelDescription: '到点响铃震动并全屏提醒服药',
+        _channelId,
+        _channelName,
+        channelDescription: _channelDesc,
         importance: Importance.max,
         priority: Priority.high,
         category: AndroidNotificationCategory.alarm,
         // 声音走闹钟音量，穿透媒体静音（与通道一致）
         audioAttributesUsage: AudioAttributesUsage.alarm,
+        // 单条通知上也显式给声音，双保险：
+        // 渠道配置在某些 ROM 上会被改写，通知级设置能兜住
+        sound: _alarmSound,
         // 闹钟式强提醒：锁屏/息屏时全屏弹出；解锁时是横幅 + 响铃震动
         fullScreenIntent: true,
         playSound: true,
         enableVibration: true,
-        // 亮屏：配合 WAKE_LOCK 权限，息屏时把屏幕点亮
+        // 明确的震动节奏（与渠道一致），老人更容易察觉
+        vibrationPattern: Int64List.fromList(<int>[0, 800, 400, 800, 400, 800]),
+        // 锁屏上也显示完整内容：吃药提醒没有隐私顾虑，
+        // 而「锁屏只显示『已隐藏』」会让老人以为不是自己的药
+        visibility: NotificationVisibility.public,
+        // 不给自动超时：用户没处理就一直留在通知栏（到点响过就够了）
         channelShowBadge: true,
         // 大字号 + 展开正文，老花眼也看得清
         styleInformation: BigTextStyleInformation(

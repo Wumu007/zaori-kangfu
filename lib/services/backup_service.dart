@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -20,11 +21,19 @@ class ExportResult {
     required this.path,
     required this.rows,
     required this.title,
+    this.degraded = false,
+    this.shareHint,
   });
 
   final String path;
   final int rows;
   final String title;
+
+  /// true = 没能存到用户想存的位置，退到了应用文件夹
+  final bool degraded;
+
+  /// 给用户的补充说明（比如「去手机文件管理 → 下载 里找」）
+  final String? shareHint;
 
   String get fileName => p.basename(path);
 }
@@ -45,24 +54,12 @@ class ImportPreview {
     required this.appVersion,
   });
 
-  /// 备份文件里的药品总数
   final int medications;
-
-  /// 备份文件里的记录总数
   final int logs;
-
-  /// 库里没有、会被新增的药品数
   final int newMedications;
-
-  /// 库里已有同 id、会被跳过的药品数
   final int duplicateMedications;
-
-  /// 库里没有、会被新增的记录数
   final int newLogs;
-
-  /// 库里已有同一条记录、会被跳过的记录数
   final int duplicateLogs;
-
   final DateTime? exportedAt;
   final String? appVersion;
 
@@ -71,7 +68,7 @@ class ImportPreview {
   /// 一句话结论（弹窗正文）
   String get summary {
     if (nothingToDo) {
-      return '这份备份里的 ${medications} 种药、${logs} 条记录，本机都已经有了，不需要导入。';
+      return '这份备份里的 $medications 种药、$logs 条记录，本机都已经有了，不需要导入。';
     }
     final StringBuffer b = StringBuffer('备份里有 $medications 种药、$logs 条记录。\n\n');
     b.write('导入后会：\n');
@@ -87,53 +84,83 @@ class ImportPreview {
   }
 }
 
-/// 备份文件格式标识 —— 只认自己导出的文件
+/// 导出失败的类型 —— UI 要按这个给不同的出路
 ///
-/// 为什么要认格式：这是「换手机恢复数据」用的，不是通用导入。
-/// 用户如果拿了个别的 CSV 进来，宁可直接说「这不是本 App 的备份」，
-/// 也不要猜字段往库里塞 —— 药名和剂量错了代价太大。
+/// V1.4.0 修复「导出失败 + 提示无写入权限」双重误导：
+/// 过去所有失败都显示「所选位置可能没有写入权限」，但真实原因是
+/// `getSaveLocation()` 在 Android 上**根本没实现**（见 [_pickSavePath]），
+/// 与权限毫无关系。把原因分类后，提示才能落到实处。
+enum ExportFailureKind {
+  /// 存储空间不足
+  noSpace,
+
+  /// 设备存储不可用（只读挂载等）
+  storageUnavailable,
+
+  /// 其他意外
+  unknown,
+}
+
+/// 备份文件格式标识 —— 只认自己导出的文件
 const String kBackupFormat = 'zaori-kangfu-backup';
 
 /// v2：medications 行增加 repeat/weekdays/month_days/dose_values 四个键。
-/// 读 v1 老备份仍然兼容（缺键按默认值归一）。
 const int kBackupVersion = 2;
 
 /// 导入/导出（纯本地文件，不联网、不上传）
 ///
-/// 两类产物，用途完全不同，不要混：
-/// - **可读导出**（CSV + 纯文本摘要）：给人看的，用 WPS/Excel 能打开、能发给医生。
-/// - **备份文件**（.json）：给 App 自己读回来的，字段全、带格式标识。
+/// ═══════════════════════════════════════════════════════════════════
+/// V1.4.0 核心修复：Android 上「导出必定失败」
+/// ═══════════════════════════════════════════════════════════════════
 ///
-/// CSV 一律带 UTF-8 BOM。不带的话 WPS 和 Excel 在中文 Windows 上会把
-/// 中文读成乱码 —— 这是导出功能最常见的「导出来了但打不开看」的原因。
+/// 【根因】`file_selector` 的 `getSaveLocation()` 在 Android 上**不可用**。
+///
+/// 证据链（逐层看源码确认）：
+/// 1. `FileSelectorAndroid`（file_selector_android 0.5.2+11）只覆写了
+///    `openFile` / `openFiles` / `getDirectoryPath`，**没有覆写
+///    `getSaveLocation`**；
+/// 2. 于是调用落到基类 `FileSelectorPlatform.getSaveLocation()`；
+/// 3. 基类实现是 `getSavePath(...)` 的一层转发；
+/// 4. `getSavePath()` 的基类实现直接
+///    `throw UnimplementedError('getSavePath() has not been implemented.')`。
+///
+/// 结论：旧代码在 Android 上**每次必抛 UnimplementedError**，
+/// 从未真正写过文件。而 `export_flow` 把所有异常都翻成
+/// 「所选位置可能没有写入权限」—— 这就是用户看到「导出失败 +
+/// 无写入权限」同时出现的由来，其实两句都不准确。
+///
+/// 【修复策略】不再依赖 SAF 保存对话框：
+/// - Android：写入 `<外部存储>/Download/早日康复/`，
+///   这是系统「文件管理 → 下载」能直接看到的公共目录，
+///   Android 10+ 通过直接路径写 Download 是允许的（属于
+///   Android/data 之外但应用可写的公共目录，且无需任何权限）；
+///   若因 ROM 限制失败，退到应用专属目录并明确告知路径。
+/// - iOS / macOS / Windows / Linux：保留系统保存对话框（这些平台有实现）。
 class BackupService {
   BackupService._();
   static final BackupService instance = BackupService._();
 
+  /// 导出的统一子目录名 —— 让用户在文件管理里一眼找到
+  static const String exportFolderName = '早日康复';
+
   // ------------------------------------------------------------ 导出：服药记录
 
   /// 导出某个日期区间的服药记录为 CSV
-  ///
-  /// [suggestedName] 由调用方按区间拼好，比如「服药记录_2026-09-01_2026-09-30.csv」
   Future<ExportResult?> exportRecords({
     required DateTime from,
     required DateTime to,
     required String suggestedName,
   }) async {
-    final _ExportBundle bundle =
-        await _buildRecordTable(from: from, to: to);
+    final _ExportBundle bundle = await _buildRecordTable(from: from, to: to);
     return _saveText(
       suggestedName: suggestedName,
-      csv: bundle.csv,
+      content: bundle.csv,
       title: '服药记录',
       rows: bundle.rows,
     );
   }
 
   /// 导出某个日期区间的记录，同时保存一份给老人看的纯文本摘要
-  ///
-  /// 两个文件一起出：CSV 给会看表格的人，txt 给只想扫一眼的人。
-  /// 用同一套区间参数，保证两份内容对得上。
   ///
   /// 返回 null = 用户取消；返回空列表 = 这段时间没有记录。
   Future<List<ExportResult>?> exportRecordsWithSummary({
@@ -147,17 +174,16 @@ class BackupService {
     final List<ExportResult> out = <ExportResult>[];
     final ExportResult? csv = await _saveText(
       suggestedName: '$baseName.csv',
-      csv: bundle.csv,
+      content: bundle.csv,
       title: '服药记录表格',
       rows: bundle.rows,
     );
-    // 用户在「保存到」界面取消了 → 整体视为取消，别再弹第二个保存框
     if (csv == null) return null;
     out.add(csv);
 
     final ExportResult? txt = await _saveText(
       suggestedName: '$baseName.txt',
-      csv: bundle.summary,
+      content: bundle.summary,
       title: '服药记录摘要',
       rows: bundle.rows,
       appendBom: false,
@@ -203,7 +229,7 @@ class BackupService {
 
     return _saveText(
       suggestedName: suggestedName,
-      csv: b.toString(),
+      content: b.toString(),
       title: '药品清单',
       rows: all.length,
     );
@@ -212,9 +238,6 @@ class BackupService {
   // ------------------------------------------------------------ 导出：备份
 
   /// 导出完整备份（药品 + 全部记录）
-  ///
-  /// 用 JSON 而不是 SQLite 文件：跨手机、跨 App 版本都能读，
-  /// 而且用户能看懂里面写的是什么（万一要人工抢救数据）。
   Future<ExportResult?> exportBackup({required String suggestedName}) async {
     final Database db = await _openDb();
     final List<Map<String, Object?>> meds =
@@ -232,22 +255,16 @@ class BackupService {
 
     return _saveText(
       suggestedName: suggestedName,
-      csv: const JsonEncoder.withIndent('  ').convert(payload),
+      content: const JsonEncoder.withIndent('  ').convert(payload),
       title: '完整备份',
       rows: meds.length + logs.length,
       appendBom: false,
-      ext: 'json',
     );
   }
 
   // ------------------------------------------------------------ 导入
 
   /// 让用户挑一个备份文件，解析并算出「会发生什么」，**不写库**
-  ///
-  /// 返回 null = 用户取消了选择。
-  /// 抛 [BackupFormatException] = 文件不是本 App 的备份（由调用方转成人话）。
-  ///
-  /// 同时把原始文本一起带回来：确认导入时不必让用户再选一次文件。
   Future<({ImportPreview preview, String raw})?> pickAndPreview() async {
     const XTypeGroup group = XTypeGroup(
       label: '早日康复备份文件',
@@ -327,9 +344,6 @@ class BackupService {
   /// 真正写库（调用方必须先让用户确认过 [previewFromJson] 的结果）
   ///
   /// 冲突策略：**只补不覆盖**。
-  /// 同 id 的药品、同一时刻的记录一律跳过 —— 用户刚在新手机上录了今天的药，
-  /// 不应被三天前的备份盖掉。想覆盖的场景（恢复成备份的样子）这一版不做，
-  /// 因为它需要「先清库再导入」，风险高得多。
   Future<({int meds, int logs})> importFromJson(String raw) async {
     final Map<String, Object?> data = _decode(raw);
     final List<Map<String, Object?>> meds = _asRows(data['medications']);
@@ -343,8 +357,6 @@ class BackupService {
       for (final Map<String, Object?> r in meds) {
         final String? id = r['id'] as String?;
         if (id == null || id.isEmpty) continue;
-        // 逐条判重而不是靠 ConflictAlgorithm.replace：
-        // replace 会把用户在本机改过的剂量悄悄改回备份里的旧值
         final List<Map<String, Object?>> hit = await txn.query(
           'medications',
           columns: <String>['id'],
@@ -387,8 +399,6 @@ class BackupService {
   // ------------------------------------------------------------ 内部
 
   Future<Database> _openDb() async {
-    // 复用仓储的同一份数据库（同一个路径、同一个版本），
-    // 不另开连接，避免两处各自 upgrade 造成 schema 打架
     return MedicationRepository.instance.database;
   }
 
@@ -427,7 +437,6 @@ class BackupService {
         .toList();
   }
 
-  /// 备份里的行可能缺新版本才有的列，补齐默认值再写
   Map<String, Object?> _normalizeMedRow(Map<String, Object?> r) {
     return <String, Object?>{
       'id': r['id'],
@@ -443,7 +452,6 @@ class BackupService {
       'enabled': r['enabled'] ?? 1,
       'stopped_at': r['stopped_at'],
       'created_at': r['created_at'] ?? DateTime.now().toIso8601String(),
-      // v3 新增列：老备份没有这些键时写 NULL，读取时模型层归一为默认值
       'repeat': r['repeat'],
       'weekdays': r['weekdays'],
       'month_days': r['month_days'],
@@ -457,7 +465,6 @@ class BackupService {
       'medication_id': r['medication_id'],
       'planned_time': r['planned_time'],
       'action_time': r['action_time'] ?? DateTime.now().toIso8601String(),
-      // 归一化旧状态名，避免把 snoozed/missed 这类历史值写进新库
       'status': IntakeStatus.fromName(r['status'] as String?).name,
       'snooze_count': r['snooze_count'] ?? 0,
       'snooze_minutes': r['snooze_minutes'] ?? 0,
@@ -465,63 +472,164 @@ class BackupService {
     };
   }
 
-  /// 弹系统「保存到」，让用户自己挑位置
+  /// 保存一份文本文件，返回落盘结果
   ///
-  /// 写入失败的兜底（V1.2 实际反馈「所选位置没有写入权限」）：
-  /// SAF 授权只覆盖用户选中的那个文件 Uri，dart:io 按路径写某些位置
-  /// （SD 卡、部分 ROM 的 Downloads）会被系统拒绝。此时**不能**把导出判死 ——
-  /// 降级写到应用专属目录（永远可写），路径原样回传给界面告诉用户文件在哪。
+  /// 平台差异（V1.4.0 重写的原因见类注释）：
+  /// - **Android**：不用 `getSaveLocation()`（未实现，必抛异常）。
+  ///   直接写 `<外部存储>/Download/早日康复/`；失败则退应用专属目录。
+  /// - **桌面 / iOS**：继续用系统保存对话框。
   Future<ExportResult?> _saveText({
     required String suggestedName,
-    required String csv,
+    required String content,
     required String title,
     required int rows,
     bool appendBom = true,
-    String ext = 'csv',
   }) async {
-    final FileSaveLocation? loc = await getSaveLocation(
-      suggestedName: suggestedName,
-      acceptedTypeGroups: <XTypeGroup>[
-        XTypeGroup(label: title, extensions: <String>[ext]),
-      ],
-    );
-    if (loc == null) return null; // 用户取消
-
     final List<int> bytes = <int>[
       // BOM 只给 CSV：Excel/WPS 靠它认出 UTF-8，否则中文药名全是乱码
       if (appendBom) ...<int>[0xEF, 0xBB, 0xBF],
-      ...utf8.encode(csv),
+      ...utf8.encode(content),
     ];
 
-    String savePath = loc.path;
-    try {
-      final File out = File(savePath);
-      await out.writeAsBytes(bytes, flush: true);
-    } catch (e) {
-      // 直接写失败 → 落到应用专属目录
-      final String fallback = await _writeToFallback(suggestedName, bytes);
-      savePath = fallback;
-      debugPrint('[Backup] 选中位置写入失败，已降级保存: $e');
+    if (Platform.isAndroid) {
+      return _saveOnAndroid(
+        suggestedName: suggestedName,
+        bytes: bytes,
+        title: title,
+        rows: rows,
+      );
     }
 
-    debugPrint('[Backup] 已导出 $title → $savePath（$rows 行）');
-    return ExportResult(path: savePath, rows: rows, title: title);
+    // ---- 桌面 / iOS：走系统保存对话框 ----
+    final FileSaveLocation? loc = await getSaveLocation(
+      suggestedName: suggestedName,
+      acceptedTypeGroups: <XTypeGroup>[
+        XTypeGroup(
+          label: title,
+          extensions: <String>[p.extension(suggestedName).replaceFirst('.', '')],
+        ),
+      ],
+    );
+    if (loc == null) return null;
+
+    try {
+      await File(loc.path).writeAsBytes(bytes, flush: true);
+      return ExportResult(path: loc.path, rows: rows, title: title);
+    } on FileSystemException catch (e) {
+      // 桌面 / iOS 上写不进去（沙盒、只读盘）→ 退下载目录
+      final String? fallback = await _tryWriteToDownload(suggestedName, bytes);
+      if (fallback == null) rethrow;
+      return ExportResult(
+        path: fallback,
+        rows: rows,
+        title: title,
+        degraded: true,
+        shareHint: '原位置写入失败，已保存到「下载/早日康复」。',
+      );
+    }
   }
 
-  /// 写入应用专属导出目录（无需任何权限，卸载前一直存在）
-  Future<String> _writeToFallback(String fileName, List<int> bytes) async {
+  /// Android：直接写公共「下载」目录，不需要任何存储权限
+  ///
+  /// 为什么不走 MediaStore API：往 Downloads 里放自己的子目录 +
+  /// `.csv`/`.txt` 这类非媒体文件，用直接路径在 Android 10+ 是允许的
+  /// （分区存储只限制 Android/data 之外的**其他应用私有**目录，
+  /// Download 是公共可写目录）。这样写还有个大好处：
+  /// 用户在「文件管理 → 下载」里能直接看到，不用打开 App。
+  Future<ExportResult?> _saveOnAndroid({
+    required String suggestedName,
+    required List<int> bytes,
+    required String title,
+    required int rows,
+  }) async {
+    final String? downloadPath = await _tryWriteToDownload(
+      suggestedName,
+      bytes,
+    );
+    if (downloadPath != null) {
+      return ExportResult(
+        path: downloadPath,
+        rows: rows,
+        title: title,
+        shareHint: '在「文件管理 → 下载 → $exportFolderName」里可以看到。',
+      );
+    }
+
+    // 有些 ROM 把 Download 也锁了 → 退到应用专属目录（一定可写）
+    try {
+      final String fallback = await _writeToAppFolder(suggestedName, bytes);
+      return ExportResult(
+        path: fallback,
+        rows: rows,
+        title: title,
+        degraded: true,
+        shareHint: '文件存在 App 自己的文件夹里，手机「文件管理」看不到。'
+            '点下面的「发送 / 保存到手机」，可以发到微信，也可以存进手机。',
+      );
+    } on FileSystemException catch (e) {
+      throw ExportException(
+        e.osError?.message.contains('ENOSPC') == true
+            ? ExportFailureKind.noSpace
+            : ExportFailureKind.unknown,
+        '写入文件失败：${e.message}',
+      );
+    }
+  }
+
+  /// 尝试写 `<ExternalStorage>/Download/早日康复/`，成功返回完整路径
+  ///
+  /// 刻意不抛异常：这是「最优位置」，失败就返回 null 让调用方降级。
+  Future<String?> _tryWriteToDownload(
+    String fileName,
+    List<int> bytes,
+  ) async {
+    Directory? base;
+    try {
+      base = await getDownloadsDirectory();
+    } catch (_) {
+      base = null;
+    }
+
+    // 有些设备 getDownloadsDirectory() 返回 null，退到手动拼外部存储路径
+    final List<String> candidates = <String>{
+      if (base != null) p.join(base.path, exportFolderName),
+      if (Platform.isAndroid) '/storage/emulated/0/Download/$exportFolderName',
+    }.toList();
+
+    for (final String dirPath in candidates) {
+      try {
+        final Directory dir = Directory(dirPath);
+        if (!dir.existsSync()) dir.createSync(recursive: true);
+        final String path = _uniquePath(dir.path, fileName);
+        await File(path).writeAsBytes(bytes, flush: true);
+        debugPrint('[Backup] 已写入 $path');
+        return path;
+      } catch (e) {
+        debugPrint('[Backup] 写入 $dirPath 失败，尝试下一个: $e');
+      }
+    }
+    return null;
+  }
+
+  /// 应用专属目录（无需任何权限，卸载前一直存在）
+  Future<String> _writeToAppFolder(String fileName, List<int> bytes) async {
     final Directory base = await getApplicationDocumentsDirectory();
-    final Directory dir = Directory(p.join(base.path, '导出的文件'));
+    final Directory dir = Directory(p.join(base.path, exportFolderName));
     if (!dir.existsSync()) dir.createSync(recursive: true);
-    // 避免重名覆盖：同名文件已存在时追加序号
-    String path = p.join(dir.path, fileName);
+    final String path = _uniquePath(dir.path, fileName);
+    await File(path).writeAsBytes(bytes, flush: true);
+    return path;
+  }
+
+  /// 同名文件已存在时追加序号，避免静默覆盖用户的旧导出
+  String _uniquePath(String dirPath, String fileName) {
+    String path = p.join(dirPath, fileName);
     int i = 1;
     while (File(path).existsSync()) {
       final String ext = p.extension(fileName);
       final String stem = p.basenameWithoutExtension(fileName);
-      path = p.join(dir.path, '$stem(${i++})$ext');
+      path = p.join(dirPath, '$stem(${i++})$ext');
     }
-    await File(path).writeAsBytes(bytes, flush: true);
     return path;
   }
 
@@ -553,8 +661,6 @@ class BackupService {
     int taken = 0;
     int notTaken = 0;
 
-    // 按天遍历，保证「那天没有记录」也能如实写成「逾期未确认」，
-    // 而不是干脆不出现 —— 漏服恰恰是最该被看见的
     final DateTime lastDay = DateTime(to.year, to.month, to.day);
     for (DateTime day = DateTime(from.year, from.month, from.day);
         !day.isAfter(lastDay);
@@ -613,10 +719,6 @@ class BackupService {
     );
   }
 
-  /// CSV 单元格转义：含逗号/引号/换行的一律用双引号包起来
-  ///
-  /// 不转义的话，备注里一个逗号就能把整张表错列 —— 而备注恰恰是
-  /// 用户最爱写「饭后吃，别喝茶」这种东西的地方。
   static String _csvCell(String raw) {
     final String v = raw.replaceAll('\r\n', ' ').replaceAll('\n', ' ');
     if (v.contains(',') || v.contains('"')) {
@@ -644,9 +746,19 @@ class BackupService {
   }
 }
 
-/// 备份文件不合规（不是本 App 的、版本太新、内容损坏）
+/// 备份文件不合规
 class BackupFormatException implements Exception {
   const BackupFormatException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+/// 导出写盘失败（带分类，方便 UI 给准确提示）
+class ExportException implements Exception {
+  const ExportException(this.kind, this.message);
+  final ExportFailureKind kind;
   final String message;
 
   @override

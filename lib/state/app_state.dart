@@ -198,7 +198,31 @@ class AppState extends ChangeNotifier {
   }
 
   /// 撤销（打错了）
+  ///
+  /// ═══════════════════════════════════════════════════════════════════
+  /// V1.4.0 修复「选择『已服用』记录时会回退」
+  /// ═══════════════════════════════════════════════════════════════════
+  ///
+  /// 根因：撤销闭包捕获的是**点击那一刻的 [DaySlot] 快照**。
+  /// `markTaken` 会 `refresh()` 重建整个列表，但捕获的旧对象不会更新。
+  /// 于是「已记录 → 界面变已服用 → 撤销」这条链上：
+  /// - toast 里的撤销回调指向旧 slot，本身仍能按 (medId, planned) 删记录；
+  /// - 但如果用户在**撤销之后再点一次同一条**（此时列表已刷新，
+  ///   新 slot 的 taken == false），旧闭包仍会被复用一次，
+  ///   再删一遍 → 界面上表现为「刚打的钩自己退回未记录」。
+  ///
+  /// 修复：撤销前**先按 key 查当前真实状态**，已经撤销过就直接跳过。
+  /// 这样 undo 变成幂等操作，重复调用不会再多删一次。
   Future<void> undo(DaySlot slot) async {
+    // 当前库里这条还有没有记录？没有说明已经撤销过了，不必再删。
+    // 用 _repo.logOf 而不是查 _statusBits：它按分钟区间精确匹配，
+    // 不受 slot.planned 秒值差异影响。
+    final existing = await _repo.logOf(slot.med.id, slot.planned);
+    if (existing == null) {
+      // 已经是「未记录」状态：不再删库，但仍刷新一次让界面与世界对齐
+      await refresh();
+      return;
+    }
     await _repo.undo(slot.med.id, slot.planned);
     await refresh();
   }

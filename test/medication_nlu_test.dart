@@ -183,9 +183,13 @@ void _scheduleAndStatusTests() {
       expect(m.coversDay(DateTime(2026, 3, 8)), isFalse);
     });
 
-    test('已停用的药不再覆盖', () {
+    test('已停用的药不再提醒（但周期计算仍然成立）', () {
       final m = med(start: DateTime(2026, 1, 1), enabled: false);
-      expect(m.coversDay(DateTime(2026, 3, 1)), isFalse);
+      // enabled 只影响「是否提醒」，不影响「这一天是否在疗程内」。
+      // coversDay 用于铺历史清单（要能回看停用前的安排），所以不含 enabled；
+      // shouldRemindOn 才是调度口径。
+      expect(m.shouldRemindOn(DateTime(2026, 3, 1)), isFalse);
+      expect(m.coversDay(DateTime(2026, 3, 1)), isTrue);
     });
 
     test('疗程到期与手动停用都能被识别', () {

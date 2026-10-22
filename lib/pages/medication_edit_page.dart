@@ -10,6 +10,7 @@ import '../services/medication_nlu.dart';
 import '../services/voice_input_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_icons.dart';
 import '../widgets/ui_kit.dart';
 
 /// 药品录入 / 编辑页
@@ -83,6 +84,13 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   /// 麦克风被「永久拒绝」时为 true：错误提示里给一个直接跳系统设置的链接
   bool _micBlocked = false;
 
+  /// 这台手机根本没有可用的语音服务（未装 Google、系统语音组件被精简等）。
+  ///
+  /// V1.4.0 新增：真机上「说话没反应」的主因就是这种情况 ——
+  /// 识别器起不来，界面上却一直显示「正在听」。此时必须停止提供语音入口，
+  /// 直接把用户导向键盘输入，而不是让他反复对着手机说话。
+  bool _voiceFatal = false;
+
   /// 此刻屏幕上应该显示的识别内容 = 已确认部分 + 正在说的部分
   String get _liveText => _finalBuf + _partial;
 
@@ -151,6 +159,9 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   // ---------------------------------------------------------------------------
 
   Future<void> _startVoice() async {
+    // 上一轮的「无语音服务」结论不清空：重试也没用，留着让用户看到真实原因；
+    // 但麦克风被拒的标记要清，因为用户可能刚从系统设置里开了权限回来。
+    if (_voiceFatal) return;
     setState(() {
       _listening = true;
       _finalBuf = '';
@@ -179,6 +190,16 @@ class _MedicationEditPageState extends State<MedicationEditPage>
         setState(() {
           _listening = false;
           _voiceError = msg;
+        });
+      },
+      // V1.4.0：按失败类型决定要不要给「去装语音服务」的出口。
+      // 没有语音服务时是这台手机真的不支持，不该让老人反复重说。
+      onFailure: (AsrFailure kind, String msg) {
+        if (!mounted) return;
+        setState(() {
+          _listening = false;
+          _voiceError = msg;
+          _voiceFatal = kind == AsrFailure.noEngine;
         });
       },
       onMicBlocked: (MicGate gate) {
@@ -659,7 +680,8 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                   // 识别结果框：结束收音后出现，文字可改，改完重新填入
                   if (_showResult) _resultCard(),
                   if (!_listening && !_showResult) _voiceEntryCard(),
-                  if (_voiceError.isNotEmpty)
+                  // 没有语音服务时上面那张卡已经把话说清楚了，不再叠一行红字
+                  if (_voiceError.isNotEmpty && !_voiceFatal)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Row(
@@ -730,6 +752,55 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   // --- 语音区 ---------------------------------------------------------------
 
   Widget _voiceEntryCard() {
+    // 这台手机没有语音服务：不再给一个「点了也没反应」的麦克风按钮，
+    // 换成一张说明卡 —— 用户最容易犯的错就是对着一台没装语音服务的手机反复说话。
+    if (_voiceFatal) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.card),
+          border: Border.all(color: AppColors.hairline, width: 0.5),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const AppIconTile(
+              AppIcons.micOff,
+              tone: AppIconTone.gray,
+              size: 34,
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    '这台手机暂时用不了语音',
+                    style: TextStyle(
+                      fontSize: AppText.bodySm,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.ink,
+                    ),
+                  ),
+                  SizedBox(height: 3),
+                  Text(
+                    '系统里没找到语音识别服务。用下面的表单填写一样快，'
+                    '药名、剂量、时间填好就能保存。',
+                    style: TextStyle(
+                      fontSize: AppText.tiny,
+                      height: 1.5,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return GestureDetector(
       onTap: _startVoice,
       behavior: HitTestBehavior.opaque,
@@ -748,7 +819,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                 color: AppColors.primary,
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.mic_none_rounded, size: 20, color: Colors.white),
+              child: const Icon(AppIcons.mic, size: 20, color: Colors.white),
             ),
             const SizedBox(width: 12),
             const Expanded(

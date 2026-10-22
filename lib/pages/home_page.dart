@@ -5,6 +5,7 @@ import '../models/day_slot.dart';
 import '../models/medication.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_icons.dart';
 import '../widgets/ui_kit.dart';
 import 'medication_edit_page.dart';
 import 'medication_list_page.dart';
@@ -72,61 +73,58 @@ class HomePage extends StatelessWidget {
         // 通知权限没拿到时，必须明说，否则用户会以为 App 坏了
         if (!state.notificationGranted) const _PermissionBanner(),
         if (state.todayTotal > 0) _ProgressCard(state: state),
-        const SizedBox(height: 16),
-        Row(
-          children: <Widget>[
-            const Text(
-              '今日服药清单',
-              style: TextStyle(
-                fontSize: AppText.bodySm,
-                fontWeight: FontWeight.w600,
-                color: AppColors.ink,
-              ),
-            ),
-            const Spacer(),
-            GestureDetector(
-              onTap: onOpenHistory,
-              behavior: HitTestBehavior.opaque,
-              child: const Padding(
-                padding: EdgeInsets.symmetric(vertical: 4, horizontal: 2),
-                child: Text(
-                  '记录 ›',
-                  style: TextStyle(fontSize: AppText.caption, color: AppColors.muted),
+        const SizedBox(height: AppSpace.gapLg),
+        // V1.4.0：章节标题统一走 SectionHeader，右侧入口带小箭头图标
+        SectionHeader(
+          '今日服药清单',
+          trailing: GestureDetector(
+            onTap: onOpenHistory,
+            behavior: HitTestBehavior.opaque,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: const <Widget>[
+                Text(
+                  '全部记录',
+                  style: TextStyle(
+                    fontSize: AppText.caption,
+                    color: AppColors.primary,
+                  ),
                 ),
-              ),
+                Icon(AppIcons.chevron, size: 15, color: AppColors.primary),
+              ],
             ),
-          ],
+          ),
         ),
-        const SizedBox(height: 10),
         if (slots.isEmpty)
           _empty(context)
         else
           AppCard(
+            shadow: true,
             child: Column(
               children: <Widget>[
                 for (int i = 0; i < slots.length; i++) ...<Widget>[
-                  if (i > 0) const AppDivider(),
+                  if (i > 0) const AppDivider(indent: 16),
                   _SlotTile(slot: slots[i], now: now),
                 ],
               ],
             ),
           ),
-        const SizedBox(height: 18),
+        const SizedBox(height: AppSpace.gapLg),
         // 唯一的语音录入入口（Bug 修复：这是全页唯一一个）
         Center(
           child: GhostPill(
             label: '语音添加药品',
-            icon: Icons.mic_none_rounded,
+            icon: AppIcons.mic,
             onTap: () => _openVoice(context),
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 4),
         Center(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () => _openList(context),
             child: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+              padding: EdgeInsets.symmetric(vertical: 8, horizontal: 8),
               child: Text(
                 '管理我的药品',
                 style: TextStyle(fontSize: AppText.caption, color: AppColors.muted),
@@ -140,9 +138,9 @@ class HomePage extends StatelessWidget {
 
   /// 空状态：只给文字引导，**不放按钮**（避免与底部入口重复）
   Widget _empty(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(top: 36),
+        padding: const EdgeInsets.only(top: 28),
         child: EmptyState(
-          icon: Icons.medication_outlined,
+          icon: AppIcons.medication,
           title: '还没有用药计划',
           // 注意：这里刻意只放文字，不放按钮 —— 语音入口在页面底部唯一处
           message: '点下面的「语音添加药品」，说一句「降压药一片，早上八点」，\n'
@@ -180,8 +178,10 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final DateTime now = DateTime.now();
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpace.pageX, 6, AppSpace.pageX, 10),
+      // V1.4.0：iOS 大标题区留白更大，标题与副标题行距更松
+      padding: const EdgeInsets.fromLTRB(AppSpace.pageX, 10, AppSpace.pageX, 14),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Expanded(
             child: Column(
@@ -190,24 +190,27 @@ class _Header extends StatelessWidget {
                 const Text(
                   '今天',
                   style: TextStyle(
-                    fontSize: AppText.h1,
+                    fontSize: AppText.largeTitle,
                     fontWeight: FontWeight.w700,
                     color: AppColors.ink,
+                    letterSpacing: -0.5, // 大字号下收紧字距，更接近 SF Pro
+                    height: 1.15,
                   ),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 4),
                 Text(
                   '${now.month} 月 ${now.day} 日 · ${_week[now.weekday - 1]}',
                   style: const TextStyle(
-                    fontSize: AppText.caption,
+                    fontSize: AppText.meta,
                     color: AppColors.muted,
                   ),
                 ),
               ],
             ),
           ),
+          const SizedBox(height: 6),
           CircleIconButton(
-            icon: Icons.medication_liquid_outlined,
+            icon: AppIcons.pill,
             tooltip: '药品管理',
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const MedicationListPage()),
@@ -215,7 +218,7 @@ class _Header extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           CircleIconButton(
-            icon: Icons.tune_rounded,
+            icon: AppIcons.settings,
             tooltip: '设置',
             onTap: onOpenSettings,
           ),
@@ -234,52 +237,85 @@ class _ProgressCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final DaySlot? next = state.nextSlot;
+    final bool allDone = state.todayPending == 0;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppColors.primarySoft,
+        // V1.4.0：从纯色块升级为渐变 + 柔和投影，
+        // 更像 iOS「卡片浮在灰底上」的层次
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[Color(0xFFEDF2FF), Color(0xFFF6F8FF)],
+        ),
         borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: const Color(0xFFDCE5FB), width: 0.5),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Row(
             children: <Widget>[
-              Text(
-                '今日 ${state.todayTotal} 次 · 已服 ${state.todayDone} 次',
-                style: const TextStyle(
-                  fontSize: AppText.meta,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF1B3A8B),
-                ),
+              AppIconTile(
+                allDone ? AppIcons.check : AppIcons.reminder,
+                tone: allDone ? AppIconTone.green : AppIconTone.blue,
+                size: 34,
               ),
-              const Spacer(),
-              Text(
-                state.todayPending == 0 ? '全部完成' : '还剩 ${state.todayPending} 次',
-                style: const TextStyle(
-                  fontSize: AppText.caption,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.primary,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      allDone ? '今天的药都吃完了' : '还剩 ${state.todayPending} 次',
+                      style: const TextStyle(
+                        fontSize: AppText.bodySm,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1B3A8B),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '今日 ${state.todayTotal} 次 · 已服 ${state.todayDone} 次',
+                      style: const TextStyle(
+                        fontSize: AppText.caption,
+                        color: AppColors.sub,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           ClipRRect(
-            borderRadius: BorderRadius.circular(3),
+            borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
               value: state.todayProgress,
-              minHeight: 6,
+              minHeight: 7,
               backgroundColor: const Color(0xFFDDE5FB),
-              valueColor: const AlwaysStoppedAnimation<Color>(AppColors.primary),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                allDone ? AppColors.success : AppColors.primary,
+              ),
             ),
           ),
-          const SizedBox(height: 10),
-          Text(
-            next == null
-                ? '剩下的药都处理过了'
-                : '下一次 ${next.hm} · ${next.med.name} ${next.doseText}',
-            style: const TextStyle(fontSize: AppText.caption, color: AppColors.sub),
+          const SizedBox(height: 12),
+          Row(
+            children: <Widget>[
+              const Icon(AppIcons.schedule, size: 14, color: AppColors.muted),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  next == null
+                      ? '剩下的药都处理过了'
+                      : '下一次 ${next.hm} · ${next.med.name} ${next.doseText}',
+                  style: const TextStyle(
+                    fontSize: AppText.caption,
+                    color: AppColors.sub,
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -389,8 +425,8 @@ class _SlotTile extends StatelessWidget {
             height: 36,
             decoration: BoxDecoration(shape: BoxShape.circle, color: bg),
             child: Icon(
-              Icons.check_rounded,
-              size: 20,
+              AppIcons.check,
+              size: 21,
               color: fg,
             ),
           ),
@@ -424,7 +460,7 @@ class _PermissionBanner extends StatelessWidget {
           const Padding(
             padding: EdgeInsets.only(top: 1),
             child: Icon(
-              Icons.notifications_off_outlined,
+              AppIcons.reminderOff,
               size: 18,
               color: AppColors.warn,
             ),

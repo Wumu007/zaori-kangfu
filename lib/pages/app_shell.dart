@@ -1,6 +1,9 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../widgets/app_icons.dart';
 import 'history_page.dart';
 import 'home_page.dart';
 import 'medication_list_page.dart';
@@ -69,53 +72,68 @@ class _BottomBar extends StatelessWidget {
   final int index;
   final ValueChanged<int> onChanged;
 
-  static const List<(IconData, String)> _items = <(IconData, String)>[
-    (Icons.today_outlined, '今日'),
-    (Icons.calendar_month_outlined, '记录'),
-    (Icons.medication_outlined, '药品'),
-    (Icons.person_outline_rounded, '我的'),
+  /// V1.4.0：全部换成 rounded 族，选中/未选中只切换同一族的两态，
+  /// 不再出现「outlined 和 rounded 混用」的割裂感。
+  static const List<(IconData, IconData, String)> _items =
+      <(IconData, IconData, String)>[
+    (AppIcons.tabToday, Icons.today_outlined, '今日'),
+    (AppIcons.history, Icons.history_outlined, '记录'),
+    (AppIcons.tabMeds, Icons.medication_outlined, '药品'),
+    (AppIcons.tabMe, Icons.person_outline_rounded, '我的'),
   ];
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.bg,
-        border: Border(top: BorderSide(color: AppColors.divider)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 58,
-          child: Row(
-            children: <Widget>[
-              for (int i = 0; i < _items.length; i++)
-                Expanded(
-                  child: InkWell(
-                    onTap: () => onChanged(i),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: <Widget>[
-                        Icon(
-                          _items[i].$1,
-                          size: 22,
-                          color: index == i ? AppColors.primary : AppColors.faint,
+    // iOS 观感：半透明 + 毛玻璃 + 极细顶部分隔线
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Color(0xF7FFFFFF),
+            border: Border(top: BorderSide(color: AppColors.hairline, width: 0.5)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: SizedBox(
+              height: 56,
+              child: Row(
+                children: <Widget>[
+                  for (int i = 0; i < _items.length; i++)
+                    Expanded(
+                      child: InkResponse(
+                        onTap: () => onChanged(i),
+                        radius: 34,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: <Widget>[
+                            Icon(
+                              index == i ? _items[i].$1 : _items[i].$2,
+                              size: 23,
+                              color: index == i
+                                  ? AppColors.primary
+                                  : AppColors.faint,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _items[i].$3,
+                              style: TextStyle(
+                                fontSize: AppText.tab,
+                                fontWeight: index == i
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                                color: index == i
+                                    ? AppColors.primary
+                                    : AppColors.faint,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          _items[i].$2,
-                          style: TextStyle(
-                            fontSize: AppText.tab,
-                            fontWeight:
-                                index == i ? FontWeight.w600 : FontWeight.w400,
-                            color: index == i ? AppColors.primary : AppColors.faint,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-                ),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
       ),

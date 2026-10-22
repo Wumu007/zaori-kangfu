@@ -4,6 +4,7 @@ import '../models/day_slot.dart';
 import '../models/medication.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_icons.dart';
 import '../widgets/ui_kit.dart';
 import 'export_flow.dart';
 import 'slot_action_sheet.dart';
@@ -72,9 +73,11 @@ class _HistoryPageState extends State<HistoryPage> {
                   const Text(
                     '记录',
                     style: TextStyle(
-                      fontSize: AppText.h1,
+                      fontSize: AppText.largeTitle,
                       fontWeight: FontWeight.w700,
                       color: AppColors.ink,
+                      letterSpacing: -0.5,
+                      height: 1.15,
                     ),
                   ),
                   const Spacer(),
@@ -92,7 +95,7 @@ class _HistoryPageState extends State<HistoryPage> {
                     tooltip: '导出记录',
                     visualDensity: VisualDensity.compact,
                     icon: const Icon(
-                      Icons.ios_share_rounded,
+                      AppIcons.exportFile,
                       size: 20,
                       color: AppColors.sub,
                     ),
@@ -158,7 +161,7 @@ class _HistoryPageState extends State<HistoryPage> {
             padding: const EdgeInsets.all(18),
             child: Row(
               children: <Widget>[
-                const Icon(Icons.event_busy_outlined, size: 20, color: AppColors.faint),
+                const Icon(AppIcons.calendar, size: 20, color: AppColors.faint),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
