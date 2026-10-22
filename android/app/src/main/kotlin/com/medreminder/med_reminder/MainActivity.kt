@@ -151,7 +151,10 @@ class MainActivity : FlutterActivity() {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             val resolved = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
             for (info in resolved) {
-                out.add(info.loadLabel(pm)?.toString() ?: info.packageName)
+                // ResolveInfo 没有 packageName 字段：标签取不到时退到
+                // activityInfo.packageName / resolvePackageName
+                val pkg = info.activityInfo?.packageName ?: info.resolvePackageName
+                out.add(info.loadLabel(pm)?.toString() ?: pkg ?: "unknown")
             }
         } catch (_: Exception) {}
         return out
