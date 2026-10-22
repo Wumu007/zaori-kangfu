@@ -127,13 +127,13 @@ class MedicationNlu {
     final source = _normalize(raw);
     var work = source;
 
-    // 1) 间隔型：每 8 小时
+    // 1) 间隔型：每 8 小时 —— 展开成从 08:00 起的一组具体时间点
+    int? intervalHours;
     final mInterval = _reEveryHours.firstMatch(work);
     if (mInterval != null) {
-      final h = int.tryParse(mInterval.group(1)!) ?? 0;
+      final int h = int.tryParse(mInterval.group(1)!) ?? 0;
       if (h > 0 && h <= 24) {
-        draft.frequency = FrequencyType.interval;
-        draft.intervalHours = h;
+        intervalHours = h;
         work = _cut(work, mInterval.start, mInterval.end);
       }
     }
@@ -232,21 +232,27 @@ class MedicationNlu {
       }
     }
 
-    // 9) 时间兜底
-    if (draft.times.isEmpty) {
-      final n = timesPerDay ?? 1;
-      final plan = _defaultDistribution[n] ??
-          List<String>.generate(n, (i) => _toHm(8 + i * 3, 0));
+    // 9) 时间兜底：一句钟点都没听到时，按「每日 N 次」的常用分配预填；
+    //    「每 N 小时」则从 08:00 起展开成具体时间点（不再保留间隔语义，
+    //    因为调度层只认时间点，这样通知与记录才对得上）。
+    if (draft.times.isEmpty && intervalHours != null) {
+      var minutes = 8 * 60;
+      while (draft.times.length < 6 && minutes < 24 * 60) {
+        draft.times.add(_toHm(minutes ~/ 60, minutes % 60));
+        minutes += intervalHours * 60;
+      }
+      draft.fieldConfidence['times'] = 0.7;
+      draft.uncertainFields.add('times');
+      draft.issues.add(
+          '已按早上 8 点开始、每隔 $intervalHours 小时提醒，请确认起始时间');
+    } else if (draft.times.isEmpty) {
+      final int n = timesPerDay ?? 1;
+      final List<String> plan = _defaultDistribution[n] ??
+          List<String>.generate(n, (int i) => _toHm(8 + i * 3, 0));
       draft.times.addAll(plan);
       draft.fieldConfidence['times'] = 0.6;
       draft.uncertainFields.add('times');
-      if (draft.frequency == FrequencyType.interval &&
-          draft.intervalHours != null) {
-        draft.issues.add(
-            '已按早上 8 点开始、每隔 ${draft.intervalHours} 小时提醒，请确认起始时间');
-      } else {
-        draft.issues.add('没听到具体钟点，已按每天 $n 次的常用时间预填，请确认');
-      }
+      draft.issues.add('没听到具体钟点，已按每天 $n 次的常用时间预填，请确认');
     } else {
       draft.fieldConfidence['times'] =
           draft.periodHint != null && draft.times.isNotEmpty ? 0.9 : 0.75;
@@ -271,9 +277,9 @@ class MedicationNlu {
       draft.issues.add('没听清药名，请重说或手动填写');
     }
 
-    // 11) 去重 + 排序
-    final uniq = <String>[];
-    for (final t in draft.times) {
+    // 11) 去重 + 排序，并按时间点数量回填频次
+    final List<String> uniq = <String>[];
+    for (final String t in draft.times) {
       if (!uniq.contains(t)) uniq.add(t);
     }
     uniq.sort();
@@ -281,9 +287,7 @@ class MedicationNlu {
       ..clear()
       ..addAll(uniq);
 
-    if (draft.frequency == FrequencyType.daily && draft.times.length > 1) {
-      draft.frequency = FrequencyType.daily;
-    }
+    draft.frequency = FrequencyType.infer(draft.times.length);
     return draft;
   }
 

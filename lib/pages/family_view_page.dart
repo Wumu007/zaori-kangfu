@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/day_slot.dart';
+import '../models/medication.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui_kit.dart';
@@ -272,6 +273,7 @@ class _PreviewCard extends StatelessWidget {
     final DateTime now = DateTime.now();
     final String hm = '${now.hour.toString().padLeft(2, '0')}:'
         '${now.minute.toString().padLeft(2, '0')}';
+    final AdherenceStat stat = state.statOf(now);
 
     return AppCard(
       padding: const EdgeInsets.all(15),
@@ -295,7 +297,8 @@ class _PreviewCard extends StatelessWidget {
           Text(
             slots.isEmpty
                 ? '今天没有用药计划'
-                : '${slots.length} 次计划 · 已完成 ${state.todayDone} 次',
+                : '${slots.length} 次计划 · 已服 ${stat.taken} 次'
+                    '${stat.notTaken > 0 ? ' · 未服 ${stat.notTaken} 次' : ''}',
             style: const TextStyle(
               fontSize: AppText.h2,
               fontWeight: FontWeight.w600,
@@ -308,20 +311,12 @@ class _PreviewCard extends StatelessWidget {
               spacing: 6,
               runSpacing: 6,
               children: slots.map((DaySlot s) {
-                final bool done = s.taken;
-                final bool isLate = s.overdue(now) && !s.taken && !s.skipped;
+                final IntakeStatus st = s.displayStatus(now);
+                final (Color fg, Color bg) = StatusBadge.colorsOf(st);
                 return SoftBadge(
-                  text: '${s.hm} ${done ? '已服' : isLate ? '未服' : '待服'}',
-                  foreground: done
-                      ? const Color(0xFF067647)
-                      : isLate
-                          ? AppColors.warn
-                          : AppColors.sub,
-                  background: done
-                      ? AppColors.successSoft
-                      : isLate
-                          ? AppColors.warnSoft
-                          : AppColors.surface,
+                  text: '${s.hm} ${st.label}',
+                  foreground: fg,
+                  background: bg,
                 );
               }).toList(),
             ),
@@ -473,8 +468,7 @@ class GuestViewPage extends StatelessWidget {
                           children: List<Widget>.generate(7, (int i) {
                             final DateTime day = today.subtract(Duration(days: i));
                             final List<DaySlot> ds = state.slotsOf(day);
-                            final int done = ds.where((DaySlot s) => s.taken).length;
-                            final int missed = state.missedOf(day);
+                            final AdherenceStat st = state.statOf(day);
                             return Padding(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 16, vertical: 9),
@@ -496,11 +490,11 @@ class GuestViewPage extends StatelessWidget {
                                     child: Text(
                                       ds.isEmpty
                                           ? '无计划'
-                                          : '已服 $done/${ds.length}'
-                                              '${missed > 0 ? ' · 漏服 $missed' : ''}',
+                                          : '已服 ${st.taken}/${ds.length}'
+                                              '${st.notTaken > 0 ? ' · 未服 ${st.notTaken}' : ''}',
                                       style: TextStyle(
                                         fontSize: AppText.caption,
-                                        color: missed > 0
+                                        color: st.notTaken > 0
                                             ? AppColors.warn
                                             : ds.isEmpty
                                                 ? AppColors.faint
@@ -551,8 +545,8 @@ class GuestViewPage extends StatelessWidget {
       );
 
   Widget _guestRow(DaySlot slot, DateTime now) {
-    final bool done = slot.taken;
-    final bool isLate = slot.overdue(now) && !slot.taken && !slot.skipped;
+    final IntakeStatus st = slot.displayStatus(now);
+    final (Color fg, Color bg) = StatusBadge.colorsOf(st);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 13, 16, 13),
       child: Row(
@@ -577,19 +571,8 @@ class GuestViewPage extends StatelessWidget {
               style: const TextStyle(fontSize: AppText.bodySm, color: AppColors.ink),
             ),
           ),
-          SoftBadge(
-            text: done ? '已服用' : isLate ? '未服' : '待服',
-            foreground: done
-                ? const Color(0xFF067647)
-                : isLate
-                    ? AppColors.warn
-                    : AppColors.muted,
-            background: done
-                ? AppColors.successSoft
-                : isLate
-                    ? AppColors.warnSoft
-                    : AppColors.surface,
-          ),
+          const SizedBox(width: 6),
+          SoftBadge(text: st.label, foreground: fg, background: bg),
         ],
       ),
     );

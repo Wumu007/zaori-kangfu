@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import 'app.dart';
+import 'models/day_slot.dart';
 import 'models/medication.dart';
 import 'services/medication_repository.dart';
 import 'services/reminder_scheduler.dart';
@@ -13,24 +14,34 @@ import 'state/app_state.dart';
 /// 1. 初始化通知插件 —— 必须先于 runApp，否则冷启动点通知按钮会丢事件；
 /// 2. 申请通知 / 精确闹钟权限 —— 结果写进 AppState，首页据此显示提示条；
 /// 3. 读设置 + 读数据库 —— AppState.bootstrap；
-/// 4. 重建一次通知 —— 覆盖「用户改了系统时间 / 重装后权限恢复」这类情况。
+/// 4. 重建一次通知 —— 覆盖「用户改了系统时间 / 重装后权限恢复 / 长期用药
+///    的 30 天排期窗口快用完」这类情况。只排不取消，已排的会被同 id 覆盖。
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await ReminderScheduler.instance.init(onAction: _handleNotificationAction);
 
-  final bool granted = await ReminderScheduler.instance.requestPermissions();
-  AppState.instance.setNotificationGranted(granted);
+  // 启动时**不申请**，只查询真实状态：通知没开就在首页顶部挂一条提示条，
+  // 由用户自己点过去开。冷启动直接弹系统授权框（尤其精确闹钟那个会跳设置页）
+  // 会让人以为 App 坏了 —— 而且用户还没看到任何界面就被要求授权。
+  final PermissionReport report =
+      await ReminderScheduler.instance.checkPermissions();
+  AppState.instance.setNotificationGranted(report.allGood);
 
   await AppState.instance.bootstrap();
-  await ReminderScheduler.instance.resync(AppState.instance.meds);
+  await ReminderScheduler.instance
+      .scheduleAll(await MedicationRepository.instance.activeMedications());
 
   runApp(const MedReminderApp());
 }
 
-/// 通知按钮回调：不打开 App 也能把「已服用 / 延后」落库
+/// 通知按钮回调：已服药 / 稍后提醒 / 跳过本次
 ///
-/// 注意：Android 侧这两个按钮配置了 showsUserInterface: true，
+/// 注意 payload 里的 `at` 是**计划时刻**，不是「现在」——
+/// 用户 20:05 才点 20:00 那条通知的「已服药」，记的必须是 20:00 那一顿，
+/// 否则他今天的清单里会凭空多出一顿、原来那顿变成「逾期未确认」。
+///
+/// Android 侧三个按钮都配置了 showsUserInterface: true，
 /// 会把 App 拉到前台再回调，避免后台 isolate 里写 sqflite 的不确定性
 /// （国产 ROM 上后台 isolate 被杀的概率不低）。
 Future<void> _handleNotificationAction(String payload, String actionId) async {
@@ -44,45 +55,72 @@ Future<void> _handleNotificationAction(String payload, String actionId) async {
   }
 
   final String? medId = data['med'] as String?;
-  final String? hm = data['hm'] as String?;
-  if (medId == null || hm == null) return;
+  final String? atRaw = data['at'] as String?;
+  if (medId == null || atRaw == null) return;
 
-  final List<String> parts = hm.split(':');
-  final DateTime now = DateTime.now();
-  final DateTime planned = DateTime(
-    now.year,
-    now.month,
-    now.day,
-    int.tryParse(parts[0]) ?? 8,
-    int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0,
-  );
+  final DateTime? planned = DateTime.tryParse(atRaw);
+  if (planned == null) return;
+
+  final AppState state = AppState.instance;
+  final MedicationRepository repo = MedicationRepository.instance;
+
+  // 点通知主体 = 打开 App 看清单，什么都不写
+  if (actionId == NotificationActionIds.open || actionId.isEmpty) {
+    await state.refresh();
+    return;
+  }
+
+  // 已有一条用户反馈时不覆盖（比如他先在 App 里打卡了，通知才被点到）
+  final ({IntakeStatus status, int snoozeMinutes})? existing =
+      await repo.logOf(medId, planned);
+  final bool hasFeedback =
+      existing != null && existing.status.hasUserFeedback;
+
+  final int totalSnooze = existing?.snoozeMinutes ?? 0;
 
   if (actionId == NotificationActionIds.taken) {
-    await MedicationRepository.instance.log(
+    if (existing?.status == IntakeStatus.taken) {
+      await state.refresh();
+      return;
+    }
+    await repo.log(
       medicationId: medId,
       plannedTime: planned,
       status: IntakeStatus.taken,
       source: 'notification',
+      snoozeMinutes: totalSnooze,
     );
+  } else if (actionId == NotificationActionIds.skip) {
+    if (!hasFeedback) {
+      await repo.log(
+        medicationId: medId,
+        plannedTime: planned,
+        status: IntakeStatus.skipped,
+        source: 'notification',
+        snoozeMinutes: totalSnooze,
+      );
+    }
   } else if (actionId == NotificationActionIds.snooze) {
-    // 先记一条「已延后」，再排一次 10 分钟后的单独通知
-    await MedicationRepository.instance.log(
+    final int minutes = state.settings.snoozeMinutes;
+    await repo.log(
       medicationId: medId,
       plannedTime: planned,
-      status: IntakeStatus.snoozed,
+      status: IntakeStatus.pending,
       source: 'notification',
       snoozeCount: 1,
+      snoozeMinutes: totalSnooze + minutes,
     );
+    // 稍后提醒：按原计划时刻重排一条，保证三个按钮仍对应同一顿药
     await ReminderScheduler.instance.snooze(
       medicationId: medId,
-      hm: hm,
+      planned: planned,
       title: '该吃药了',
       body: (data['body'] as String?) ?? '别忘了吃药',
-      // 跟「我的 → 通知里延后多久」保持一致
-      minutes: AppState.instance.settings.snoozeMinutes,
+      name: (data['name'] as String?) ?? '',
+      minutes: minutes,
     );
   }
 
   // 界面立刻反映最新状态
-  await AppState.instance.refresh();
+  await state.refresh();
 }

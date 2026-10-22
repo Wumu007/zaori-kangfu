@@ -1,16 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../services/backup_service.dart';
 import '../services/reminder_scheduler.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui_kit.dart';
+import 'export_flow.dart';
 import 'family_view_page.dart';
+import 'medication_list_page.dart';
 
 /// 「我的」页（设置）
 ///
-/// 这里只放四类东西：家属查看入口、影响提醒行为的设置、权限修复入口、免责声明。
+/// 只放四类东西：药品入口、家属查看入口、影响提醒行为的设置、权限修复与说明。
 /// 原则：每个开关都必须立刻生效，不做「设了但不生效」的假设置。
+///
+/// 【Bug 修复记录】「通知里延后多久」下方的选项框互相重叠。
+/// 原因：选项容器用了 `Row` + 固定宽度分配，屏幕一窄（或开了大字号）总宽度
+/// 超过可用宽度，最后一项被挤出边界压到前面的框上 —— 视觉重叠但点击仍然
+/// 命中自己那一层，所以「不影响点击」很符合症状。
+/// 修法：改用 [ChoiceChips]（内部是 `Wrap`），宽度自适应、放不下自动换行，
+/// 并且给每个选项一个最小高度，既不会重叠也不会挤成一条细缝。
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
@@ -39,7 +49,7 @@ class SettingsPage extends StatelessWidget {
                   ),
                   const Spacer(),
                   Text(
-                    '${state.meds.length} 种药',
+                    '${state.meds.length} 种药在提醒',
                     style: const TextStyle(
                       fontSize: AppText.caption,
                       color: AppColors.muted,
@@ -58,15 +68,30 @@ class SettingsPage extends StatelessWidget {
                 ),
                 children: <Widget>[
                   AppCard(
-                    child: _NavRow(
-                      icon: Icons.people_outline_rounded,
-                      title: '家属查看',
-                      subtitle: state.settings.guestPin == null
-                          ? '本机查看（未设置查看密码）'
-                          : '本机查看已开启 · 需 4 位密码',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(builder: (_) => const FamilyViewPage()),
-                      ),
+                    child: Column(
+                      children: <Widget>[
+                        _NavRow(
+                          icon: Icons.medication_outlined,
+                          title: '药品管理',
+                          subtitle: '添加、编辑、删除药品；可停止提醒并保留历史',
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const MedicationListPage(),
+                            ),
+                          ),
+                        ),
+                        const AppDivider(),
+                        _NavRow(
+                          icon: Icons.people_outline_rounded,
+                          title: '家属查看',
+                          subtitle: state.settings.guestPin == null
+                              ? '本机查看（未设置查看密码）'
+                              : '本机查看已开启 · 需 4 位密码',
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(builder: (_) => const FamilyViewPage()),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: AppSpace.gap),
@@ -91,51 +116,49 @@ class SettingsPage extends StatelessWidget {
                           ),
                         ),
                         const AppDivider(),
+                        SwitchListTile.adaptive(
+                          value: state.settings.confirmBeforeSkip,
+                          onChanged: state.settings.setConfirmBeforeSkip,
+                          activeTrackColor: AppColors.primary,
+                          title: const Text(
+                            '跳过本次前再确认',
+                            style: TextStyle(
+                              fontSize: AppText.bodySm,
+                              fontWeight: FontWeight.w500,
+                              color: AppColors.ink,
+                            ),
+                          ),
+                          subtitle: const Text(
+                            '防止误触把一顿药记成「已跳过」',
+                            style: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
+                          ),
+                        ),
+                        const AppDivider(),
                         Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
                               const Text(
-                                '通知里「延后」多久',
+                                '通知里「稍后提醒」多久',
                                 style: TextStyle(
                                   fontSize: AppText.bodySm,
                                   fontWeight: FontWeight.w500,
                                   color: AppColors.ink,
                                 ),
                               ),
-                              const SizedBox(height: 10),
-                              Wrap(
-                                spacing: 8,
-                                children: _snoozeOptions.map((int m) {
-                                  final bool active = state.settings.snoozeMinutes == m;
-                                  return GestureDetector(
-                                    onTap: () => _onSnoozeChanged(m),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 14, vertical: 8),
-                                      decoration: BoxDecoration(
-                                        color: active
-                                            ? AppColors.primarySoft
-                                            : AppColors.surface,
-                                        borderRadius:
-                                            BorderRadius.circular(AppRadius.badge),
-                                      ),
-                                      child: Text(
-                                        '$m 分钟',
-                                        style: TextStyle(
-                                          fontSize: AppText.caption,
-                                          fontWeight: active
-                                              ? FontWeight.w600
-                                              : FontWeight.w400,
-                                          color: active
-                                              ? AppColors.primary
-                                              : AppColors.sub,
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                }).toList(),
+                              const SizedBox(height: 4),
+                              const Text(
+                                '点通知上的「稍后提醒」后，隔多久再响一次',
+                                style: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
+                              ),
+                              const SizedBox(height: 12),
+                              // 关键修复：Wrap 布局，宽度自适应 + 自动换行
+                              ChoiceChips<int>(
+                                options: _snoozeOptions,
+                                value: state.settings.snoozeMinutes,
+                                onChanged: _onSnoozeChanged,
+                                labelOf: (int m) => '$m 分钟',
                               ),
                             ],
                           ),
@@ -156,7 +179,7 @@ class SettingsPage extends StatelessWidget {
                       subtitle: state.notificationGranted
                           ? '已允许，到点会响'
                           : '未允许，到点可能不响 —— 点这里去开',
-                      onTap: () => _fixPermissions(context),
+                      onTap: () => _openPermissionSheet(context),
                     ),
                   ),
                   const SizedBox(height: AppSpace.gap),
@@ -172,9 +195,9 @@ class SettingsPage extends StatelessWidget {
                         const AppDivider(),
                         _NavRow(
                           icon: Icons.storage_outlined,
-                          title: '数据存储',
-                          subtitle: '全部保存在本机，不上传、不需要登录',
-                          onTap: () => _showStorageInfo(context),
+                          title: '备份与恢复',
+                          subtitle: '换手机时把药品和记录完整带走',
+                          onTap: () => _openDataSheet(context),
                         ),
                       ],
                     ),
@@ -182,7 +205,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 22),
                   const Center(
                     child: Text(
-                      '早日康复 v1.1.0 · 本地版',
+                      '早日康复 v1.2.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -195,25 +218,44 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
-  /// 延后时长改了要立刻重排通知，否则旧通知还是按老时长
+  /// 延后时长改了要立刻重排通知，否则旧通知上的按钮还是老时长
   Future<void> _onSnoozeChanged(int minutes) async {
     final AppState state = AppState.instance;
     await state.settings.setSnoozeMinutes(minutes);
     await ReminderScheduler.instance.resync(state.meds);
   }
 
-  /// 先尝试重新申请，被永久拒绝就跳系统设置
-  Future<void> _fixPermissions(BuildContext context) async {
-    final AppState state = AppState.instance;
-    final bool granted = await ReminderScheduler.instance.requestPermissions();
-    state.setNotificationGranted(granted);
-    if (!granted) {
-      await openAppSettings();
-    }
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(granted ? '通知权限已开启' : '请手动允许通知与闹钟权限')),
+  /// 打开权限体检面板
+  ///
+  /// 【Bug 修复】上一版这里是「点一下 → 申请一次 → 弹一句提示」：
+  /// 通知早就允许时申请立即返回成功，于是只弹「通知权限已开启」，
+  /// 而真正导致提醒被推迟的**精确闹钟**没开这件事，用户永远看不到，
+  /// 也点不进系统设置 —— 表现就是「这个选项不能选，只会说已开启」。
+  ///
+  /// 现在改成：先真实查询两项状态 → 在面板里分项列出「已开 / 没开」→
+  /// 没开的给一个明确的按钮直接跳系统对应页面 → 回到 App 时自动复查。
+  Future<void> _openPermissionSheet(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: AppColors.bg,
+      builder: (BuildContext ctx) => _PermissionSheet(
+        onChanged: (bool granted) {
+          AppState.instance.setNotificationGranted(granted);
+        },
+      ),
     );
+    // 用户可能刚从系统设置回来，刷新一下首页的提示条
+    if (!context.mounted) return;
+    await _refreshPermissionState();
+  }
+
+  /// 静默复查（不弹提示），供返回时调用
+  Future<void> _refreshPermissionState() async {
+    final PermissionReport report =
+        await ReminderScheduler.instance.checkPermissions();
+    AppState.instance.setNotificationGranted(report.allGood);
   }
 
   void _showDisclaimer(BuildContext context) {
@@ -238,26 +280,630 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
-  void _showStorageInfo(BuildContext context) {
+  /// 备份与恢复面板
+  ///
+  /// 三件事：导出备份（换手机带走）、导入备份（新手机恢复）、以及
+  /// 「数据存在哪」的说明。之所以把它们放一起，是因为用户问「我的数据呢」
+  /// 和「怎么带走」其实是同一个问题。
+  Future<void> _openDataSheet(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: AppColors.bg,
+      builder: (BuildContext ctx) => _DataSheet(
+        onImported: () async {
+          final AppState state = AppState.instance;
+          await state.refresh();
+          // 导入的药品也要真的会响 —— 只刷新界面不排通知等于没恢复
+          await ReminderScheduler.instance.resync(state.meds);
+        },
+      ),
+    );
+  }
+}
+
+/// 权限设置面板
+///
+/// 设计取舍（用户反馈直接决定的）：
+/// 「点一下只告诉我已开启」根本不算设置项 —— 用户要的是**能选**。
+/// 所以这里改成两个真的开关：
+/// - 开关的状态 = 系统里的真实状态（不是本地记的一个布尔值）；
+/// - 打开开关 → 直接跳到系统对应的授权页；
+/// - 关闭开关 → 也跳系统页（Android 不允许第三方 App 自己关掉权限），
+///   并在跳转前说清楚「这里关掉，到点就不会响了」；
+/// - 从系统页回来（resumed）自动重查，开关跟着系统状态走，不存在两边不一致。
+///
+/// 只放两项：通知、精确闹钟。麦克风不在这里 —— 它跟「到点响不响」无关，
+/// 在第一次用语音录入时一次性申请，不打扰日常使用。
+class _PermissionSheet extends StatefulWidget {
+  const _PermissionSheet({required this.onChanged});
+
+  /// 状态变化时回传给设置页，用于更新首页提示条
+  final ValueChanged<bool> onChanged;
+
+  @override
+  State<_PermissionSheet> createState() => _PermissionSheetState();
+}
+
+class _PermissionSheetState extends State<_PermissionSheet>
+    with WidgetsBindingObserver {
+  PermissionReport? _report;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _check();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// 从系统设置切回来时自动复查 —— 用户不需要再点一次「刷新」
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _check();
+  }
+
+  Future<void> _check() async {
+    final PermissionReport report =
+        await ReminderScheduler.instance.checkPermissions();
+    if (!mounted) return;
+    setState(() => _report = report);
+    widget.onChanged(report.allGood);
+  }
+
+  /// 用户拨动「通知」开关
+  ///
+  /// 两种情况都跳系统页：
+  /// - 现在是关的 → 调一次系统授权弹窗（还能弹的话），弹不出来再跳设置页；
+  /// - 现在是开的 → 引导去系统里关（App 无权自己关），并提示后果。
+  Future<void> _toggleNotifications(bool want) async {
+    if (!want) {
+      final bool? go = await _confirmClose(
+        title: '关掉通知？',
+        body: '关掉之后，到点不会有任何提醒，服药清单也不会弹出来。\n'
+            '建议先停药或改用别的提醒方式再关。',
+      );
+      if (go != true) return;
+      if (!mounted) return;
+      await openAppSettings();
+      await _check();
+      return;
+    }
+
+    setState(() => _busy = true);
+    await ReminderScheduler.instance.requestPermissions();
+    await _check();
+    if (!mounted) return;
+    setState(() => _busy = false);
+
+    final PermissionReport? r = _report;
+    if (r != null && !r.notifications) {
+      // 用户以前选过「不再询问」，系统不会弹了，只能去设置页手动开
+      await openAppSettings();
+      await _check();
+    }
+  }
+
+  /// 用户拨动「精确闹钟」开关
+  Future<void> _toggleExactAlarms(bool want) async {
+    if (!want) {
+      final bool? go = await _confirmClose(
+        title: '关掉精确闹钟？',
+        body: '关掉之后提醒仍然会响，但系统可能把它推迟几分钟到几十分钟，'
+            '也可能在息屏后合并成一条。',
+      );
+      if (go != true) return;
+      if (!mounted) return;
+    }
+    setState(() => _busy = true);
+    await ReminderScheduler.instance.openExactAlarmSettings();
+    // 部分 ROM 不会暂停 App，稍等一下再查，避免查到旧值
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    await _check();
+    if (!mounted) return;
+    setState(() => _busy = false);
+  }
+
+  Future<bool?> _confirmClose({
+    required String title,
+    required String body,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(
+          body,
+          style: const TextStyle(
+            fontSize: AppText.caption,
+            height: 1.7,
+            color: AppColors.sub,
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('保持开启'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('去系统里关'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final PermissionReport? r = _report;
+    final bool notifications = r?.notifications ?? false;
+    final bool exactAlarms = r?.exactAlarms ?? false;
+    final bool allGood = r?.allGood ?? false;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text(
+              '通知与闹钟权限',
+              style: TextStyle(
+                fontSize: AppText.h2,
+                fontWeight: FontWeight.w600,
+                color: AppColors.ink,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '两项都打开，提醒才准。开关显示的是手机系统里的真实状态。',
+              style: TextStyle(fontSize: AppText.caption, color: AppColors.muted),
+            ),
+            const SizedBox(height: 16),
+            if (r == null)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else ...<Widget>[
+              AppCard(
+                child: Column(
+                  children: <Widget>[
+                    _permSwitch(
+                      title: '通知',
+                      desc: notifications
+                          ? '已允许，到点会响'
+                          : '没允许，到点不会有任何提示',
+                      value: notifications,
+                      onChanged: _busy ? null : _toggleNotifications,
+                    ),
+                    const AppDivider(),
+                    _permSwitch(
+                      title: '精确闹钟',
+                      desc: exactAlarms
+                          ? '已允许，提醒准点响'
+                          : '没允许，提醒可能被推迟几分钟到几十分钟',
+                      value: exactAlarms,
+                      onChanged: _busy ? null : _toggleExactAlarms,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: allGood ? AppColors.successSoft : AppColors.warnSoft,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Icon(
+                      allGood
+                          ? Icons.check_circle_outline_rounded
+                          : Icons.error_outline_rounded,
+                      size: 18,
+                      color: allGood ? AppColors.success : AppColors.warn,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        allGood
+                            ? '两项都开好了，到点会准点提醒。'
+                            : '还差一项没开，提醒可能不准。把上面没开的那一项打开即可。',
+                        style: TextStyle(
+                          fontSize: AppText.tiny,
+                          height: 1.55,
+                          color: allGood ? const Color(0xFF067647) : AppColors.warn,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                '开关会跳到手机系统的设置页，因为 Android 不允许 App 自己改权限。'
+                '改完返回这里会自动同步。\n'
+                '部分手机（小米、华为、OPPO、vivo 等）还需要打开「后台弹出界面」'
+                '「自启动」「省电策略：不受限制」，否则息屏后提醒可能被拦截。',
+                style: TextStyle(
+                  fontSize: AppText.tiny,
+                  height: 1.6,
+                  color: AppColors.faint,
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextButton(
+                    onPressed: _busy ? null : _check,
+                    child: Text(
+                      _busy ? '处理中…' : '重新检查',
+                      style: const TextStyle(fontSize: AppText.caption),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text(
+                      '完成',
+                      style: TextStyle(
+                        fontSize: AppText.caption,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 一行「标题 + 说明 + 开关」
+  Widget _permSwitch({
+    required String title,
+    required String desc,
+    required bool value,
+    required ValueChanged<bool>? onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: AppText.bodySm,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.ink,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  desc,
+                  style: TextStyle(
+                    fontSize: AppText.tiny,
+                    height: 1.45,
+                    color: value ? AppColors.muted : AppColors.warn,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Switch.adaptive(
+            value: value,
+            onChanged: onChanged,
+            activeTrackColor: AppColors.primary,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 备份与恢复面板
+///
+/// 关键取舍：**导入只做一件事 —— 换手机恢复**。
+/// 所以只认本 App 导出的 .json，不猜任何外来表格。理由是药名和剂量一旦被
+/// 猜错，代价是吃错药；而「看数据」这件事，导出 CSV 已经解决了。
+///
+/// 导入的流程是「先预览，再写入」：
+/// 选完文件先算出「会新增几种药、几条记录、跳过多少重复」，
+/// 让用户看清后果再点确认，而不是点一下就闷头写库。
+class _DataSheet extends StatefulWidget {
+  const _DataSheet({required this.onImported});
+
+  /// 导入成功后回调，用于刷新首页/记录页并重排提醒
+  final Future<void> Function() onImported;
+
+  @override
+  State<_DataSheet> createState() => _DataSheetState();
+}
+
+class _DataSheetState extends State<_DataSheet> {
+  bool _busy = false;
+
+  Future<void> _import() async {
+    setState(() => _busy = true);
+    ({ImportPreview preview, String raw})? picked;
+    try {
+      picked = await BackupService.instance.pickAndPreview();
+    } on BackupFormatException catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      _dialog(title: '这个文件用不了', body: e.message);
+      return;
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      _dialog(title: '打不开这个文件', body: '文件可能已经损坏，或者没有读取权限。');
+      debugPrint('[Import] 读取失败: $e');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+
+    // null = 用户在选文件时取消了，不打扰
+    if (picked == null) return;
+    final ImportPreview preview = picked.preview;
+
+    final bool? go = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('从备份恢复'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              preview.summary,
+              style: const TextStyle(
+                fontSize: AppText.caption,
+                height: 1.7,
+                color: AppColors.sub,
+              ),
+            ),
+            if (preview.exportedAt != null) ...<Widget>[
+              const SizedBox(height: 10),
+              Text(
+                '备份时间：${_dateTimeText(preview.exportedAt!)}',
+                style: const TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
+              ),
+            ],
+          ],
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: preview.nothingToDo
+                ? null
+                : () => Navigator.of(ctx).pop(true),
+            child: Text(preview.nothingToDo ? '无需导入' : '开始导入'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final ({int meds, int logs}) r =
+          await BackupService.instance.importFromJson(picked.raw);
+      await widget.onImported();
+      if (!mounted) return;
+      setState(() => _busy = false);
+      _dialog(
+        title: '导入完成',
+        body: '新增 ${r.meds} 种药品、${r.logs} 条服药记录。\n\n'
+            '已有的数据没有被改动。回到首页就能看到。',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      _dialog(title: '导入失败', body: '写入时出错了，本机数据没有被改动。');
+      debugPrint('[Import] 写入失败: $e');
+    }
+  }
+
+  void _dialog({required String title, required String body}) {
     showDialog<void>(
       context: context,
       builder: (BuildContext ctx) => AlertDialog(
-        title: const Text('数据存储'),
-        content: const Text(
-          '用药计划与服药记录只保存在这台手机上（本地数据库），不会上传服务器，也不需要注册账号。\n\n'
-          '因此：卸载 App 或换手机，记录不会自动迁移。',
-          style: TextStyle(
+        title: Text(title),
+        content: Text(
+          body,
+          style: const TextStyle(
             fontSize: AppText.caption,
             height: 1.75,
             color: AppColors.sub,
           ),
         ),
         actions: <Widget>[
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('知道了')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('知道了'),
+          ),
         ],
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text(
+              '备份与恢复',
+              style: TextStyle(
+                fontSize: AppText.h2,
+                fontWeight: FontWeight.w600,
+                color: AppColors.ink,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '所有数据只存在这台手机上，不会上传。换手机前先导出一份备份。',
+              style: TextStyle(fontSize: AppText.caption, height: 1.55, color: AppColors.muted),
+            ),
+            const SizedBox(height: 16),
+            AppCard(
+              child: Column(
+                children: <Widget>[
+                  _actionRow(
+                    icon: Icons.cloud_upload_outlined,
+                    title: '导出完整备份',
+                    desc: '药品 + 全部服药记录，存成一个文件',
+                    onTap: _busy ? null : () => ExportFlow.backup(context),
+                  ),
+                  const AppDivider(),
+                  _actionRow(
+                    icon: Icons.cloud_download_outlined,
+                    title: '从备份恢复',
+                    desc: '在新手机上选这份文件，只补缺的，不覆盖已有的',
+                    onTap: _busy ? null : _import,
+                  ),
+                  const AppDivider(),
+                  _actionRow(
+                    icon: Icons.table_chart_outlined,
+                    title: '导出服药记录表格',
+                    desc: 'CSV，手机 WPS 就能打开看',
+                    onTap: _busy ? null : () => ExportFlow.records(context),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warnSoft,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Icon(Icons.info_outline_rounded, size: 18, color: AppColors.warn),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '卸载 App 会把本机数据一起删掉。换手机或重装前，务必先导出一份备份，'
+                      '并把文件存到微信收藏或网盘里。',
+                      style: TextStyle(
+                        fontSize: AppText.tiny,
+                        height: 1.6,
+                        color: AppColors.warn,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text(
+                  '完成',
+                  style: TextStyle(
+                    fontSize: AppText.caption,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _actionRow({
+    required IconData icon,
+    required String title,
+    required String desc,
+    required VoidCallback? onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+        child: Row(
+          children: <Widget>[
+            Icon(icon, size: 20, color: onTap == null ? AppColors.faint : AppColors.sub),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: AppText.bodySm,
+                      fontWeight: FontWeight.w500,
+                      color: onTap == null ? AppColors.faint : AppColors.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    desc,
+                    style: const TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
+                  ),
+                ],
+              ),
+            ),
+            if (onTap != null)
+              const Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.faint)
+            else
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _dateTimeText(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')} '
+      '${d.hour.toString().padLeft(2, '0')}:'
+      '${d.minute.toString().padLeft(2, '0')}';
 }
 
 /// 带图标的一行入口

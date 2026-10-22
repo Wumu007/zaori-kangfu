@@ -99,7 +99,7 @@ jobs:
 
       - name: 编译 Release APK
         run: |
-          flutter build apk --release --build-name=1.1.0 --build-number=${GITHUB_RUN_NUMBER}
+          flutter build apk --release --build-name=1.2.0 --build-number=${GITHUB_RUN_NUMBER}
           echo "--- 产物 ---"
           ls -lh build/app/outputs/flutter-apk/
 
@@ -111,7 +111,7 @@ jobs:
             echo ""
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
-            echo "| 版本 | 1.1.0 (build ${GITHUB_RUN_NUMBER}) |"
+            echo "| 版本 | 1.2.0 (build ${GITHUB_RUN_NUMBER}) |"
             echo "| 大小 | $(du -h "$APK" | cut -f1) |"
             echo "| CPU 架构 | universal（arm64-v8a + armeabi-v7a + x86_64） |"
             echo "| SHA256 | \`$(sha256sum "$APK" | cut -d' ' -f1)\` |"

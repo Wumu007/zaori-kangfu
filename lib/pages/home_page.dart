@@ -6,13 +6,19 @@ import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui_kit.dart';
 import 'family_view_page.dart';
-import 'voice_intake_page.dart';
+import 'medication_edit_page.dart';
+import 'medication_list_page.dart';
+import 'slot_action_sheet.dart';
 
-/// 今日页（通用版）
+/// 今日页
 ///
-/// 信息层级：还剩几次（进度条）→ 今天吃什么（时间轴）→ 语音添加（快捷入口）。
-/// 相比适老稿：去掉了整屏蓝色大卡和 56px 打钩区，
-/// 但打钩的点击热区仍是 44×44，色块对比度不变 —— 该有的可达性一个没少。
+/// 信息层级：还剩几次（进度条）→ 今天吃什么（时间轴）→ 唯一一个语音添加入口。
+///
+/// 【Bug 修复记录】上一版这里有两个「语音添加」按钮：
+/// 一处在列表底部（[常驻]），一处在空状态卡片里（[_empty]），
+/// 而两者同时渲染时（列表为空也会渲染底部那个）就出现双入口。
+/// 现在的规则是：**语音入口只由列表底部这一处负责**，空状态只给文字引导，
+/// 不再放按钮 —— 单一来源，以后也不会再冒出第二个。
 class HomePage extends StatelessWidget {
   const HomePage({
     super.key,
@@ -64,13 +70,13 @@ class HomePage extends StatelessWidget {
       ),
       children: <Widget>[
         // 通知权限没拿到时，必须明说，否则用户会以为 App 坏了
-        if (!state.notificationGranted) const _PermissionBanner(),
+        if (!state.notificationGranted) const PermissionBanner(),
         if (state.todayTotal > 0) _ProgressCard(state: state),
         const SizedBox(height: 16),
         Row(
           children: <Widget>[
             const Text(
-              '今日用药',
+              '今日服药清单',
               style: TextStyle(
                 fontSize: AppText.bodySm,
                 fontWeight: FontWeight.w600,
@@ -80,9 +86,13 @@ class HomePage extends StatelessWidget {
             const Spacer(),
             GestureDetector(
               onTap: onOpenHistory,
-              child: const Text(
-                '记录',
-                style: TextStyle(fontSize: AppText.caption, color: AppColors.muted),
+              behavior: HitTestBehavior.opaque,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                child: Text(
+                  '记录 ›',
+                  style: TextStyle(fontSize: AppText.caption, color: AppColors.muted),
+                ),
               ),
             ),
           ],
@@ -102,40 +112,61 @@ class HomePage extends StatelessWidget {
             ),
           ),
         const SizedBox(height: 18),
+        // 唯一的语音录入入口（Bug 修复：这是全页唯一一个）
         Center(
           child: GhostPill(
-            label: '语音添加',
+            label: '语音添加药品',
             icon: Icons.mic_none_rounded,
             onTap: () => _openVoice(context),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Center(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _openList(context),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+              child: Text(
+                '管理我的药品',
+                style: TextStyle(fontSize: AppText.caption, color: AppColors.muted),
+              ),
+            ),
           ),
         ),
       ],
     );
   }
 
+  /// 空状态：只给文字引导，**不放按钮**（避免与底部入口重复）
   Widget _empty(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(top: 40),
+        padding: const EdgeInsets.only(top: 36),
         child: EmptyState(
           icon: Icons.medication_outlined,
           title: '还没有用药计划',
-          message: '点下面的「语音添加」，说一句「降压药一片，早上八点」，\n我帮你把时间和提醒都设好。',
-          action: GhostPill(
-            label: '语音添加',
-            icon: Icons.mic_none_rounded,
-            onTap: () => _openVoice(context),
-          ),
+          // 注意：这里刻意只放文字，不放按钮 —— 语音入口在页面底部唯一处
+          message: '点下面的「语音添加药品」，说一句「降压药一片，早上八点」，\n'
+              '时间和提醒一次设好；也可以进「管理我的药品」用键盘慢慢填。',
         ),
       );
 
   Future<void> _openVoice(BuildContext context) async {
     final bool? saved = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(builder: (_) => const VoiceIntakePage()),
+      MaterialPageRoute<bool>(
+        builder: (_) => const MedicationEditPage(voiceFirst: true),
+      ),
     );
     if (saved == true) await AppState.instance.refresh();
   }
+
+  Future<void> _openList(BuildContext context) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const MedicationListPage()),
+    );
+  }
 }
 
-/// 顶部：日期 + 家属查看 + 设置
+/// 顶部：日期 + 药品管理 + 家属查看 + 设置
 class _Header extends StatelessWidget {
   const _Header({required this.onOpenSettings});
 
@@ -176,6 +207,14 @@ class _Header extends StatelessWidget {
             ),
           ),
           CircleIconButton(
+            icon: Icons.medication_liquid_outlined,
+            tooltip: '药品管理',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const MedicationListPage()),
+            ),
+          ),
+          const SizedBox(width: 8),
+          CircleIconButton(
             icon: Icons.people_outline_rounded,
             tooltip: '家属查看',
             onTap: () => Navigator.of(context).push(
@@ -215,7 +254,7 @@ class _ProgressCard extends StatelessWidget {
           Row(
             children: <Widget>[
               Text(
-                '今日 ${state.todayTotal} 次 · 已完成 ${state.todayDone} 次',
+                '今日 ${state.todayTotal} 次 · 已服 ${state.todayDone} 次',
                 style: const TextStyle(
                   fontSize: AppText.meta,
                   fontWeight: FontWeight.w500,
@@ -246,7 +285,7 @@ class _ProgressCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(
             next == null
-                ? '今天的药都吃完了'
+                ? '剩下的药都处理过了'
                 : '下一次 ${next.hm} · ${next.med.name} ${next.med.dosageText}',
             style: const TextStyle(fontSize: AppText.caption, color: AppColors.sub),
           ),
@@ -256,7 +295,7 @@ class _ProgressCard extends StatelessWidget {
   }
 }
 
-/// 一行药：时间 / 药名+剂量 / 打钩
+/// 一行药：时间 / 药名+剂量+状态 / 状态徽标 / 打钩
 class _SlotTile extends StatelessWidget {
   const _SlotTile({required this.slot, required this.now});
 
@@ -265,13 +304,15 @@ class _SlotTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool taken = slot.taken;
-    final bool isLate = slot.overdue(now);
+    final IntakeStatus st = slot.displayStatus(now);
+    final bool taken = st.isTaken;
+    final bool overdue = st == IntakeStatus.overdue;
+    final bool skipped = st == IntakeStatus.skipped;
 
     return InkWell(
-      onTap: () => _openSheet(context),
+      onTap: () => openSlotActionSheet(context, slot),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+        padding: const EdgeInsets.fromLTRB(16, 13, 12, 13),
         child: Row(
           children: <Widget>[
             SizedBox(
@@ -304,213 +345,64 @@ class _SlotTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    slot.subtitle,
+                    slot.med.dosageText,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: AppText.caption,
-                      color: taken
-                          ? AppColors.success
-                          : isLate
-                              ? AppColors.warn
-                              : AppColors.muted,
+                      color: taken ? AppColors.faint : AppColors.muted,
                     ),
                   ),
                 ],
               ),
             ),
-            _checkButton(context),
+            const SizedBox(width: 8),
+            StatusBadge(status: st, compact: true),
+            const SizedBox(width: 4),
+            _checkButton(context, taken: taken, overdue: overdue, skipped: skipped),
           ],
         ),
       ),
     );
   }
 
-  /// 打钩/撤销。视觉是 40px 圆，热区靠外层 SizedBox 撑到 44。
-  Widget _checkButton(BuildContext context) {
-    final bool taken = slot.taken;
+  /// 打钩/撤销。视觉是 36px 圆，热区靠外层 SizedBox 撑到 44。
+  Widget _checkButton(
+    BuildContext context, {
+    required bool taken,
+    required bool overdue,
+    required bool skipped,
+  }) {
+    final Color fg = taken
+        ? AppColors.success
+        : overdue
+            ? AppColors.warn
+            : skipped
+                ? AppColors.muted
+                : AppColors.faint;
+    final Color bg = taken
+        ? AppColors.successSoft
+        : overdue
+            ? AppColors.warnSoft
+            : AppColors.surface;
     return InkResponse(
       radius: 24,
-      onTap: () => _toggle(context),
+      onTap: () => toggleTaken(context, slot),
       child: SizedBox(
         width: 44,
         height: 44,
         child: Center(
           child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: taken
-                  ? AppColors.successSoft
-                  : slot.overdue(now)
-                      ? AppColors.warnSoft
-                      : AppColors.surface,
-            ),
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: bg),
             child: Icon(
               Icons.check_rounded,
-              size: 22,
-              color: taken
-                  ? AppColors.success
-                  : slot.overdue(now)
-                      ? AppColors.warn
-                      : AppColors.faint,
+              size: 20,
+              color: fg,
             ),
           ),
         ),
-      ),
-    );
-  }
-
-  Future<void> _toggle(BuildContext context) async {
-    final AppState state = AppState.instance;
-    if (slot.taken) {
-      await state.undo(slot);
-      if (!context.mounted) return;
-      _toast(context, '已撤销：${slot.med.name}');
-      return;
-    }
-    await state.markTaken(slot);
-    if (!context.mounted) return;
-    // 打错了能立刻改，不用去历史页翻
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已记录：${slot.med.name}'),
-        duration: const Duration(seconds: 4),
-        action: SnackBarAction(
-          label: '点错了',
-          textColor: Colors.white,
-          onPressed: () => state.undo(slot),
-        ),
-      ),
-    );
-  }
-
-  void _toast(BuildContext context, String text) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(text), duration: const Duration(seconds: 2)),
-    );
-  }
-
-  /// 长按/点击整行 → 管理这一个药（停用、删除）
-  Future<void> _openSheet(BuildContext context) async {
-    final AppState state = AppState.instance;
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      backgroundColor: AppColors.bg,
-      builder: (BuildContext ctx) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              ListTile(
-                title: Text(
-                  '${slot.med.name} · ${slot.med.dosageText}',
-                  style: const TextStyle(
-                    fontSize: AppText.h2,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.ink,
-                  ),
-                ),
-                subtitle: Text(
-                  '每天 ${slot.med.times.join(' / ')}'
-                  '${slot.med.note == null ? '' : ' · ${slot.med.note}'}',
-                  style: const TextStyle(fontSize: AppText.caption, color: AppColors.muted),
-                ),
-              ),
-              const Divider(),
-              ListTile(
-                leading: const Icon(Icons.pause_circle_outline_rounded),
-                title: const Text('停用这个药', style: TextStyle(fontSize: AppText.bodySm)),
-                subtitle: const Text(
-                  '停用后不再提醒，历史记录保留',
-                  style: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
-                ),
-                onTap: () async {
-                  Navigator.of(ctx).pop();
-                  await state.saveMedication(slot.med.copyWith(enabled: false));
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.delete_outline_rounded, color: AppColors.danger),
-                title: const Text(
-                  '删除这个药',
-                  style: TextStyle(fontSize: AppText.bodySm, color: AppColors.danger),
-                ),
-                subtitle: const Text(
-                  '连同它的历史记录一起删除，不可恢复',
-                  style: TextStyle(fontSize: AppText.tiny, color: AppColors.muted),
-                ),
-                onTap: () async {
-                  final bool ok = await _confirmDelete(ctx, slot.med);
-                  if (!ok || !ctx.mounted) return;
-                  Navigator.of(ctx).pop();
-                  await state.deleteMedication(slot.med.id);
-                },
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Future<bool> _confirmDelete(BuildContext context, Medication med) async {
-    final bool? ok = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext ctx) => AlertDialog(
-        title: Text('删除「${med.name}」'),
-        content: const Text(
-          '删除后不再提醒，之前的服药记录也会一起清掉，无法恢复。',
-          style: TextStyle(fontSize: AppText.caption, height: 1.6, color: AppColors.sub),
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
-    );
-    return ok ?? false;
-  }
-}
-
-/// 通知权限缺失提示条
-class _PermissionBanner extends StatelessWidget {
-  const _PermissionBanner();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.warnSoft,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Icon(Icons.notifications_off_outlined, size: 18, color: AppColors.warn),
-          SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '通知权限没打开，到点可能不会提醒。请到系统设置里允许「通知」和「闹钟与提醒」。',
-              style: TextStyle(
-                fontSize: AppText.tiny,
-                height: 1.5,
-                color: AppColors.warn,
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

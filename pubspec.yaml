@@ -1,7 +1,7 @@
 name: med_reminder
-description: 早日康复 App（V1）—— 支持语音口述录入每日用药，纯本地、不需要登录
+description: 早日康复 App（V2）—— 语音口述录入用药计划、到点本地提醒、按日期回看服药记录，纯本地、不需要登录
 publish_to: 'none'
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -26,6 +26,12 @@ dependencies:
 
   # 通知/麦克风/精确闹钟权限与「跳系统设置」
   permission_handler: ^11.3.1
+
+  # 导入/导出：让用户自己挑保存位置（系统「保存到」界面）与备份文件
+  #
+  # 为什么钉 ^1.0.3 而不是 latest：1.1.0 起要求 Flutter >= 3.35，而本项目
+  # 用的是 CI 上的 stable 通道，钉住一个下界低、行为稳定的版本更保险。
+  file_selector: ^1.0.3
 
 dev_dependencies:
   flutter_test:
