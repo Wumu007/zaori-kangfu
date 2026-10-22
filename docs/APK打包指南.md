@@ -175,6 +175,25 @@ keytool -list -v -keystore upload-keystore.jks -alias upload
 
 ## 4. 构建 APK
 
+### 4.0 云端构建（本地零安装，最省事）
+
+推到 `main` 分支即自动触发 `.github/workflows/android-apk.yml`：
+
+```bash
+git add -A && git commit -m "..." && git push origin main
+```
+
+约 10–15 分钟后到仓库 **Actions → 对应那一次运行 → 页面底部 Artifacts** 下载
+`zaori-kangfu-apk-<run号>.zip`，解压即得 `app-release.apk`。
+
+- 工作流自动装 Flutter stable + JDK 17 + Android SDK
+- 自动 `flutter analyze` → `flutter test` → `build apk`
+- 编译失败时日志会在「自检」或「编译」那一步明确标红，直接看那一段即可
+- 无需签名也能出**可安装**的包（用 debug key 签的 release 包），自用足够；
+  要上架或长期升级再用下面 3.x 的正式 keystore
+
+> 本地完全不用装 Flutter / JDK / Android SDK。
+
 ### 4.1 Debug 包（自己测）
 
 ```bash
@@ -185,9 +204,12 @@ flutter build apk --debug
 ### 4.2 Release 通用包（一个包兼容所有机型）
 
 ```bash
-flutter build apk --release
-# 产物：build/app/outputs/flutter-apk/app-release.apk（约 18–24 MB）
+flutter build apk --release --build-name=1.2.0 --build-number=3
+# 产物：build/app/outputs/flutter-apk/app-release.apk（约 56–60 MB，含 arm64 + armeabi-v7a）
 ```
+
+> 体积偏大是因为同一个包内塞了两套 ABI 的 libflutter.so，装到手机上只解出对应那一套。
+> 想减小下载体积就走 4.3 分包。
 
 ### 4.3 按 CPU 架构分包（推荐，体积最小）
 

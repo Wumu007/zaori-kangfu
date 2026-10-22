@@ -30,3 +30,7 @@ runs.json
 jobs.json
 runid.txt
 step.txt
+
+# ---- 构建产物：只留本地，不进仓库 ----
+dist/*.apk
+dist/*.zip
