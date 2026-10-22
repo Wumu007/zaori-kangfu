@@ -382,9 +382,10 @@ class ReminderScheduler {
         presentAlert: true,
         presentBadge: true,
         presentSound: true,
-        // iOS 侧同理：时效性通知 + 关键音量级别，穿透静音
+        // iOS 侧同理：critical 级别时效性通知，穿透专注模式与静音
+        // （17.x 的 DarwinNotificationDetails 没有 criticalSound 参数，
+        //   音量行为由 interruptionLevel: critical 驱动）
         interruptionLevel: InterruptionLevel.critical,
-        criticalSound: true,
         categoryIdentifier: 'med_action',
       ),
     );

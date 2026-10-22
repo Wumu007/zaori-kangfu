@@ -560,8 +560,6 @@ class _MedicationEditPageState extends State<MedicationEditPage>
 
     setState(() => _saving = true);
 
-    final double dose = double.parse(_doseCtrl.text.trim());
-    final List<String> times = List<String>.from(_times)..sort();
     // 每顿独立剂量：与 times 下标对齐；没填独立剂量的位置存默认值
     final List<double>? doseValues = _timeDoses.isEmpty
         ? null
