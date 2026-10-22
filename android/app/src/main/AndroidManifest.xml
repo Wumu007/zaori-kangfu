@@ -19,11 +19,24 @@
     <!-- 语音录入收音 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- 导出文件写入（Android 10 及以下需要；11+ 走系统「保存到」不再需要，
+         但部分 ROM 的文件选择器仍会按旧路径落盘，声明上以兼容） -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <!-- 通知震动 -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!-- 部分机型锁屏亮屏提醒需要 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 闹钟式强提醒：到点全屏弹出提醒界面（锁屏/息屏也生效）。
+         Android 14+ 系统会按「闹钟/来电类」自动授予，无需手动开 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- 语音识别 / TTS 在 Android 11+ 需要显式声明可见性 -->
     <queries>

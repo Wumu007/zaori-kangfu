@@ -31,6 +31,9 @@ class DaySlot {
       '${planned.hour.toString().padLeft(2, '0')}:'
       '${planned.minute.toString().padLeft(2, '0')}';
 
+  /// 这一顿的剂量文案：优先读该时间点的独立剂量（如「早上 1 片、晚上半片」）
+  String get doseText => med.dosageTextOf(hm);
+
   bool get taken => status == IntakeStatus.taken;
   bool get skipped => status == IntakeStatus.skipped;
   bool get snoozed => status == IntakeStatus.pending;
@@ -64,8 +67,8 @@ class DaySlot {
   /// 第二行文案：「1 片 · 饭后」/「1 片 · 饭后 · 已服药」
   String get subtitle {
     final String base = med.note == null || med.note!.isEmpty
-        ? med.dosageText
-        : '${med.dosageText} · ${med.note}';
+        ? doseText
+        : '$doseText · ${med.note}';
     final IntakeStatus? s = status;
     if (s == null) return base;
     if (s == IntakeStatus.pending && snoozeMinutes > 0) {

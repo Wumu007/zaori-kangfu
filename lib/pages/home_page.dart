@@ -6,7 +6,6 @@ import '../models/medication.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui_kit.dart';
-import 'family_view_page.dart';
 import 'medication_edit_page.dart';
 import 'medication_list_page.dart';
 import 'slot_action_sheet.dart';
@@ -167,7 +166,7 @@ class HomePage extends StatelessWidget {
   }
 }
 
-/// 顶部：日期 + 药品管理 + 家属查看 + 设置
+/// 顶部：日期 + 药品管理 + 设置
 class _Header extends StatelessWidget {
   const _Header({required this.onOpenSettings});
 
@@ -212,14 +211,6 @@ class _Header extends StatelessWidget {
             tooltip: '药品管理',
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const MedicationListPage()),
-            ),
-          ),
-          const SizedBox(width: 8),
-          CircleIconButton(
-            icon: Icons.people_outline_rounded,
-            tooltip: '家属查看',
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const FamilyViewPage()),
             ),
           ),
           const SizedBox(width: 8),
@@ -287,7 +278,7 @@ class _ProgressCard extends StatelessWidget {
           Text(
             next == null
                 ? '剩下的药都处理过了'
-                : '下一次 ${next.hm} · ${next.med.name} ${next.med.dosageText}',
+                : '下一次 ${next.hm} · ${next.med.name} ${next.doseText}',
             style: const TextStyle(fontSize: AppText.caption, color: AppColors.sub),
           ),
         ],
@@ -346,7 +337,7 @@ class _SlotTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    slot.med.dosageText,
+                    slot.doseText,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(

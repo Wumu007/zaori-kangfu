@@ -48,8 +48,14 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   late final TextEditingController _nameCtrl;
   late final TextEditingController _doseCtrl;
   String _unit = '片';
-  FrequencyType _freq = FrequencyType.once;
   final List<String> _times = <String>[];
+
+  /// 每个时间点的独立剂量（键 = 'HH:mm'，值 = 剂量文本；空 = 用默认剂量）。
+  /// 支持「早上 1 片、晚上半片」这类每顿不同的医嘱。
+  final Map<String, String> _timeDoses = <String, String>{};
+  RepeatType _repeat = RepeatType.daily;
+  final Set<int> _weekdays = <int>{DateTime.monday};
+  final Set<int> _monthDays = <int>{1};
   String? _note;
   DateTime? _startDate;
   DateTime? _endDate;
@@ -62,11 +68,23 @@ class _MedicationEditPageState extends State<MedicationEditPage>
 
   bool _listening = false;
   bool _saving = false;
+
+  /// 已确认的识别文本（多段 final 依次拼接；中文之间不加空格）
+  String _finalBuf = '';
+
+  /// 正在说的这句话的实时部分结果（随说话不断变长）
   String _partial = '';
+
+  /// 识别结束后的可编辑结果框（用户可以改字再重新填入）
+  final TextEditingController _resultCtrl = TextEditingController();
+  bool _showResult = false;
   String _voiceError = '';
 
   /// 麦克风被「永久拒绝」时为 true：错误提示里给一个直接跳系统设置的链接
   bool _micBlocked = false;
+
+  /// 此刻屏幕上应该显示的识别内容 = 已确认部分 + 正在说的部分
+  String get _liveText => _finalBuf + _partial;
 
   bool get _isEdit => widget.med != null;
 
@@ -79,12 +97,27 @@ class _MedicationEditPageState extends State<MedicationEditPage>
       text: m == null ? '' : _fmtNum(m.dosageValue),
     );
     _unit = m?.dosageUnit ?? '片';
-    _freq = m?.frequency ?? FrequencyType.once;
     if (m != null) {
       _times.addAll(m.times);
       _note = m.note;
       _startDate = m.startDate;
       _endDate = m.endDate;
+      _repeat = m.repeat;
+      _weekdays
+        ..clear()
+        ..addAll(m.weekdays);
+      _monthDays
+        ..clear()
+        ..addAll(m.monthDays);
+      for (int i = 0; i < m.times.length; i++) {
+        final double? v = m.doseValues == null || i >= m.doseValues!.length
+            ? null
+            : m.doseValues![i];
+        // 与默认剂量相同的独立剂量没有存在意义，不进 map
+        if (v != null && v != m.dosageValue) {
+          _timeDoses[m.times[i]] = _fmtNum(v);
+        }
+      }
     } else {
       _startDate = DateTime.now();
     }
@@ -103,6 +136,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
     _doseCtrl.removeListener(_onFieldChanged);
     _nameCtrl.dispose();
     _doseCtrl.dispose();
+    _resultCtrl.dispose();
     _wave.dispose();
     _voice.dispose();
     super.dispose();
@@ -113,13 +147,15 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   }
 
   // ---------------------------------------------------------------------------
-  // 语音
+  // 语音：实时转写 → 结束自动填入 → 结果可改再重新填入
   // ---------------------------------------------------------------------------
 
   Future<void> _startVoice() async {
     setState(() {
       _listening = true;
+      _finalBuf = '';
       _partial = '';
+      _showResult = false;
       _voiceError = '';
       _micBlocked = false;
     });
@@ -132,7 +168,11 @@ class _MedicationEditPageState extends State<MedicationEditPage>
       },
       onFinal: (String t) {
         if (!mounted) return;
-        _applyVoice(t);
+        // 一大段话会被系统断成多段 final，逐段拼接，不能只留最后一段
+        setState(() {
+          _finalBuf += t;
+          _partial = '';
+        });
       },
       onError: (String msg) {
         if (!mounted) return;
@@ -148,6 +188,20 @@ class _MedicationEditPageState extends State<MedicationEditPage>
           _micBlocked = gate == MicGate.permanentlyDenied;
         });
       },
+      // 识别会话结束（自然停/超时/系统打断）→ 同步退出收音态。
+      // V1.2「一直显示正在听」就是因为会话死了 UI 不知道。
+      onStopped: () {
+        if (!mounted || !_listening) return;
+        setState(() => _listening = false);
+        final String text = _liveText.trim();
+        if (text.isEmpty) {
+          setState(() {
+            _voiceError = '没听到声音，再说一次，或者直接用下面的键盘填写';
+          });
+          return;
+        }
+        _finishWithText(text);
+      },
     );
     if (!ok && mounted) {
       setState(() => _listening = false);
@@ -157,7 +211,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   Future<void> _stopAndParse() async {
     await _voice.stop();
     if (!mounted) return;
-    final String text = _partial.trim();
+    final String text = _liveText.trim();
     if (text.isEmpty) {
       setState(() {
         _listening = false;
@@ -165,16 +219,33 @@ class _MedicationEditPageState extends State<MedicationEditPage>
       });
       return;
     }
+    setState(() => _listening = false);
+    _finishWithText(text);
+  }
+
+  /// 识别完成：文本放进可编辑结果框，自动解析填入表单
+  void _finishWithText(String text) {
+    setState(() {
+      _showResult = true;
+      _resultCtrl.text = text;
+    });
     _applyVoice(text);
   }
 
-  /// 语音识别结果 → 回填表单
+  /// 用户改了识别文字后重新填入
+  void _reapplyResult() {
+    final String text = _resultCtrl.text.trim();
+    if (text.isEmpty) {
+      showAppToast(context, '识别文字是空的');
+      return;
+    }
+    _applyVoice(text);
+  }
+
+  /// 语音识别结果 → 解析并回填表单（填入后仍可手动修改任何字段）
   void _applyVoice(String text) {
     final MedicationDraft d = MedicationNlu.parse(text);
     setState(() {
-      _listening = false;
-      _partial = text;
-
       if (d.hasName) _nameCtrl.text = d.name!;
       if (d.hasDosage) {
         _doseCtrl.text = _fmtNum(d.dosageValue!);
@@ -205,33 +276,14 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   // 表单编辑
   // ---------------------------------------------------------------------------
 
-  /// 频次是「结果」不是「输入项」：时间点数量决定频次文案，
-  /// 但「每日一次」会强制只留一个时间点，避免出现「说是一次却有三次」的矛盾。
+  /// 语音填入后的整理：时间点排序。频次由时间点数量自然表达，无需单独维护。
   void _syncFrequencyByTimes() {
     _times.sort();
-    if (_freq == FrequencyType.once && _times.length > 1) {
-      final String keep = _times.first;
-      _times
-        ..clear()
-        ..add(keep);
-    }
   }
 
-  void _onFrequencyChanged(FrequencyType f) {
-    setState(() {
-      _freq = f;
-      if (f == FrequencyType.once && _times.length > 1) {
-        final String keep = _times.first;
-        _times
-          ..clear()
-          ..add(keep);
-      }
-      if (f == FrequencyType.multi && _times.isEmpty) {
-        // 每日多次的常见默认：早八晚八，用户可改
-        _times.addAll(<String>['08:00', '20:00']);
-      }
-      _times.sort();
-    });
+  /// 切换重复周期（每天 / 每周 / 每月）
+  void _onRepeatChanged(RepeatType r) {
+    setState(() => _repeat = r);
   }
 
   Future<void> _addTime() async {
@@ -251,24 +303,178 @@ class _MedicationEditPageState extends State<MedicationEditPage>
     if (picked == null) return;
     final String hm = '${picked.hour.toString().padLeft(2, '0')}:'
         '${picked.minute.toString().padLeft(2, '0')}';
+    if (_times.contains(hm)) {
+      _toast('这个时间已经加过了');
+      return;
+    }
     setState(() {
-      if (_times.contains(hm)) {
-        _toast('这个时间已经加过了');
-        return;
-      }
       _times.add(hm);
       _times.sort();
-      if (_freq == FrequencyType.once) _freq = FrequencyType.multi;
       _uncertain.remove('times');
     });
   }
 
-  void _removeTime(String hm) {
-    setState(() {
-      _times.remove(hm);
-      if (_times.length <= 1) _freq = FrequencyType.once;
-    });
+  /// 点某个时间点：改时间本身、改这一顿的独立剂量、或删除
+  Future<void> _editTime(String hm) async {
+    final String? removed = await _timeDoseDialog(hm);
+    if (removed != null && mounted) {
+      setState(() {
+        _times.remove(removed);
+        _timeDoses.remove(removed);
+      });
+    }
   }
+
+  /// 编辑时间与剂量的弹窗。
+  /// 返回 null = 取消；返回旧时间点字符串 = 删除了该时间点；
+  /// 返回 'ok' = 完成了修改（时间/剂量已在内部更新）。
+  Future<String?> _timeDoseDialog(String hm) async {
+    TimeOfDay picked = _parseHm(hm);
+    final TextEditingController doseCtrl =
+        TextEditingController(text: _timeDoses[hm] ?? '');
+    final String? action = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) => StatefulBuilder(
+        builder: (BuildContext ctx, void Function(VoidCallback) setDlg) {
+          return AlertDialog(
+            title: const Text('这一顿的时间和剂量'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                GestureDetector(
+                  onTap: () async {
+                    final TimeOfDay? t = await showTimePicker(
+                      context: ctx,
+                      initialTime: picked,
+                      helpText: '选择提醒时间',
+                      cancelText: '取消',
+                      confirmText: '确定',
+                    );
+                    if (t != null) setDlg(() => picked = t);
+                  },
+                  child: Container(
+                    height: 46,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.badge),
+                    ),
+                    child: Row(
+                      children: <Widget>[
+                        const Icon(Icons.schedule_rounded,
+                            size: 16, color: AppColors.faint),
+                        const SizedBox(width: 8),
+                        Text(
+                          '${picked.hour.toString().padLeft(2, '0')}:'
+                          '${picked.minute.toString().padLeft(2, '0')}',
+                          style: const TextStyle(
+                            fontSize: AppText.bodySm,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                        const Spacer(),
+                        const Text(
+                          '点这里改时间',
+                          style: TextStyle(
+                              fontSize: AppText.tiny, color: AppColors.faint),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: doseCtrl,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                  ],
+                  style:
+                      const TextStyle(fontSize: AppText.body, color: AppColors.ink),
+                  decoration: InputDecoration(
+                    hintText: '留空 = 用默认剂量 $_doseCtrlHint',
+                    hintStyle: const TextStyle(
+                        fontSize: AppText.caption, color: AppColors.faint),
+                    isDense: true,
+                    filled: true,
+                    fillColor: AppColors.surface,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 13),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppRadius.badge),
+                      borderSide: const BorderSide(color: AppColors.line),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '适合「早上 1 片、晚上半片」这种每顿不一样的医嘱',
+                  style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
+                ),
+              ],
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop('DELETE'),
+                child: const Text(
+                  '删除',
+                  style: TextStyle(color: AppColors.danger),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(null),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop('OK'),
+                child: const Text('确定', style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    final String doseText = doseCtrl.text.trim();
+    doseCtrl.dispose();
+    if (!mounted) return null;
+
+    if (action == 'DELETE') return hm;
+
+    if (action == 'OK') {
+      final String newHm =
+          '${picked.hour.toString().padLeft(2, '0')}:'
+          '${picked.minute.toString().padLeft(2, '0')}';
+      if (_times.contains(newHm) && newHm != hm) {
+        _toast('这个时间已经加过了');
+        return null;
+      }
+      setState(() {
+        // 改时间：把旧时间点（连同它的独立剂量）迁到新时间点
+        if (newHm != hm) {
+          final String? oldDose = _timeDoses.remove(hm);
+          _times.remove(hm);
+          if (!_times.contains(newHm)) _times.add(newHm);
+          _times.sort();
+          if (oldDose != null) _timeDoses[newHm] = oldDose;
+        }
+        // 改剂量：填了就记独立剂量，清空则回落默认剂量
+        if (doseText.isNotEmpty) {
+          _timeDoses[newHm] = doseText;
+        } else {
+          _timeDoses.remove(newHm);
+        }
+      });
+      return null;
+    }
+    return null; // 取消
+  }
+
+  /// 弹窗 hint 用的默认剂量文案
+  String get _doseCtrlHint =>
+      '${_doseCtrl.text.trim().isEmpty ? '未填' : _doseCtrl.text.trim()} $_unit';
 
   Future<void> _pickDate({required bool isEnd}) async {
     final DateTime now = DateTime.now();
@@ -354,12 +560,28 @@ class _MedicationEditPageState extends State<MedicationEditPage>
 
     setState(() => _saving = true);
 
+    final double dose = double.parse(_doseCtrl.text.trim());
+    final List<String> times = List<String>.from(_times)..sort();
+    // 每顿独立剂量：与 times 下标对齐；没填独立剂量的位置存默认值
+    final List<double>? doseValues = _timeDoses.isEmpty
+        ? null
+        : <double>[
+            for (final String hm in times)
+              double.tryParse(_timeDoses[hm] ?? '') ?? dose,
+          ];
+    // 全部等于默认剂量时没必要存独立剂量，省一层理解成本
+    final bool allDefault =
+        doseValues == null || doseValues.every((double v) => v == dose);
+    // 频次由时间点数量自然表达：1 个 = 每日一次，多个 = 每日多次
+    final FrequencyType freq =
+        times.length <= 1 ? FrequencyType.once : FrequencyType.multi;
+
     final Medication med = Medication(
       id: widget.med?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       name: _nameCtrl.text.trim(),
       dosageValue: dose,
       dosageUnit: _unit,
-      frequency: _freq,
+      frequency: freq,
       times: times,
       note: _note,
       startDate: _startDate,
@@ -368,6 +590,10 @@ class _MedicationEditPageState extends State<MedicationEditPage>
       enabled: widget.med?.enabled ?? true,
       stoppedAt: widget.med?.stoppedAt,
       createdAt: widget.med?.createdAt ?? DateTime.now(),
+      repeat: _repeat,
+      weekdays: _repeat == RepeatType.weekly ? _weekdays.toList() : null,
+      monthDays: _repeat == RepeatType.monthly ? _monthDays.toList() : null,
+      doseValues: allDefault ? null : doseValues,
     );
 
     await AppState.instance.saveMedication(med);
@@ -376,11 +602,21 @@ class _MedicationEditPageState extends State<MedicationEditPage>
     Navigator.of(context).pop(true);
   }
 
+  /// 保存前确认框里的频次文案（读 [_repeat] 与时间点）
   String _freqText(int count) {
-    if (_freq == FrequencyType.custom) return '自定义 $count 个时间';
-    if (count <= 1) return '每日一次';
-    const List<String> cn = <String>['零', '一', '二', '三', '四', '五', '六', '七', '八'];
-    return '每日${count < cn.length ? cn[count] : '$count'}次';
+    switch (_repeat) {
+      case RepeatType.weekly:
+        final String days =
+            _weekdays.map((int w) => kWeekdayNames[w - 1]).join('、');
+        return '每周$days，共 $count 个时间';
+      case RepeatType.monthly:
+        final List<int> days = _monthDays.toList()..sort();
+        return '每月 ${days.join('、')} 日，共 $count 个时间';
+      case RepeatType.daily:
+        if (count <= 1) return '每天一次';
+        const List<String> cn = <String>['零', '一', '二', '三', '四', '五', '六', '七', '八'];
+        return '每天${count < cn.length ? cn[count] : '$count'}次';
+    }
   }
 
   String _periodText() {
@@ -421,7 +657,10 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                   20,
                 ),
                 children: <Widget>[
-                  if (_listening) _listeningCard() else _voiceEntryCard(),
+                  if (_listening) _listeningCard(),
+                  // 识别结果框：结束收音后出现，文字可改，改完重新填入
+                  if (_showResult) _resultCard(),
+                  if (!_listening && !_showResult) _voiceEntryCard(),
                   if (_voiceError.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
@@ -555,9 +794,10 @@ class _MedicationEditPageState extends State<MedicationEditPage>
             children: <Widget>[
               const Icon(Icons.graphic_eq_rounded, size: 18, color: AppColors.primary),
               const SizedBox(width: 6),
-              const Text(
-                '正在听…说完点「说完了」',
-                style: TextStyle(
+              // 实时转写：有字了提示「边说边出字」，没字提示「正在听」
+              Text(
+                _liveText.isEmpty ? '正在听，请说话…' : '正在听，边说边出字',
+                style: const TextStyle(
                   fontSize: AppText.caption,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primary,
@@ -596,14 +836,132 @@ class _MedicationEditPageState extends State<MedicationEditPage>
           const SizedBox(height: 8),
           _Waveform(controller: _wave),
           const SizedBox(height: 6),
-          Text(
-            _partial.isEmpty ? '……' : '$_partial|',
+          // 实时识别文字：已确认的深色 + 正在说的浅色，随说话不断变长
+          _liveText.isEmpty
+              ? const Text(
+                  '……',
+                  style: TextStyle(fontSize: AppText.bodySm, color: AppColors.faint),
+                )
+              : Text.rich(
+                  TextSpan(
+                    children: <InlineSpan>[
+                      if (_finalBuf.isNotEmpty)
+                        TextSpan(
+                          text: _finalBuf,
+                          style: const TextStyle(
+                            fontSize: AppText.bodySm,
+                            height: 1.55,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                      if (_partial.isNotEmpty)
+                        TextSpan(
+                          text: _partial,
+                          style: TextStyle(
+                            fontSize: AppText.bodySm,
+                            height: 1.55,
+                            fontWeight: FontWeight.w400,
+                            color: AppColors.ink.withOpacity(0.55),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+        ],
+      ),
+    );
+  }
+
+  /// 识别结果卡：文字可编辑，改完点「重新填入」；不满意可整段重说
+  Widget _resultCard() {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      decoration: BoxDecoration(
+        color: AppColors.bg,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              const Icon(Icons.edit_note_rounded, size: 18, color: AppColors.sub),
+              const SizedBox(width: 6),
+              const Text(
+                '识别结果（可直接改字）',
+                style: TextStyle(
+                  fontSize: AppText.caption,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.sub,
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: _reapplyResult,
+                behavior: HitTestBehavior.opaque,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Text(
+                    '重新填入',
+                    style: TextStyle(
+                      fontSize: AppText.caption,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: _startVoice,
+                behavior: HitTestBehavior.opaque,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Text(
+                    '重新说',
+                    style: TextStyle(fontSize: AppText.caption, color: AppColors.muted),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _resultCtrl,
+            maxLines: 3,
+            minLines: 1,
             style: const TextStyle(
               fontSize: AppText.bodySm,
               height: 1.55,
-              fontWeight: FontWeight.w500,
               color: AppColors.ink,
             ),
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: AppColors.surface,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.badge),
+                borderSide: const BorderSide(color: AppColors.line),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.badge),
+                borderSide: const BorderSide(color: AppColors.line),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.badge),
+                borderSide: const BorderSide(color: AppColors.primary),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '填错了的字直接改，改完点右上角「重新填入」，下面表单会跟着更新。',
+            style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
           ),
         ],
       ),
@@ -615,7 +973,9 @@ class _MedicationEditPageState extends State<MedicationEditPage>
     if (!mounted) return;
     setState(() {
       _listening = false;
+      _finalBuf = '';
       _partial = '';
+      _showResult = false;
     });
   }
 
@@ -689,26 +1049,29 @@ class _MedicationEditPageState extends State<MedicationEditPage>
         ),
         const AppDivider(),
         FormRow(
-          label: '服用频次',
+          label: '服药频次',
+          hint: '先选多久吃一次，再在下面添加每次的时间',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              SegmentedPills<FrequencyType>(
-                options: const <FrequencyType>[
-                  FrequencyType.once,
-                  FrequencyType.multi,
-                  FrequencyType.custom,
-                ],
-                value: _freq,
-                onChanged: _onFrequencyChanged,
-                labelOf: (FrequencyType f) => f == FrequencyType.custom ? '自定义' : f.label,
+              // iOS 风格胶囊分段控件：每天 / 每周 / 每月
+              SegmentedPills<RepeatType>(
+                options: RepeatType.values,
+                value: _repeat,
+                onChanged: _onRepeatChanged,
+                labelOf: (RepeatType r) => r.label,
               ),
+              const SizedBox(height: 10),
+              // 每周：选星期几（可多选，「每周两次」就是勾两个）
+              if (_repeat == RepeatType.weekly) _weekdayPicker(),
+              // 每月：选几号（可多选）
+              if (_repeat == RepeatType.monthly) _monthDayPicker(),
               const SizedBox(height: 6),
               Text(
-                switch (_freq) {
-                  FrequencyType.once => '每天固定一个时间点提醒',
-                  FrequencyType.multi => '一天多个固定时间点，可直接增删',
-                  FrequencyType.custom => '想几点就加几点，最多 8 个',
+                switch (_repeat) {
+                  RepeatType.daily => '每天都提醒，时间点在下方增删',
+                  RepeatType.weekly => '只在勾选的星期几提醒（至少勾一天）',
+                  RepeatType.monthly => '只在勾选的日期提醒；没有 31 号的月份自动按月末算',
                 },
                 style: const TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
               ),
@@ -843,7 +1206,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
           label: '提醒时间',
           hint: _times.isEmpty
               ? '至少加一个时间点，保存后才会响'
-              : '到点后会弹通知，可以直接在通知上点「已服药」',
+              : '点某个时间片可以改这一顿的时间或剂量',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
@@ -913,7 +1276,93 @@ class _MedicationEditPageState extends State<MedicationEditPage>
     );
   }
 
+  /// 每周几选择器：胶囊多选，样式对齐 iOS 的 FilterChips
+  Widget _weekdayPicker() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: <Widget>[
+        for (int w = 1; w <= 7; w++)
+          _toggleChip(
+            label: kWeekdayNames[w - 1],
+            selected: _weekdays.contains(w),
+            onTap: () {
+              setState(() {
+                if (_weekdays.contains(w)) {
+                  // 至少保留一天，全取消等于没设置
+                  if (_weekdays.length > 1) _weekdays.remove(w);
+                } else {
+                  _weekdays.add(w);
+                }
+              });
+            },
+          ),
+      ],
+    );
+  }
+
+  /// 每月几号选择器：1-31 胶囊多选
+  Widget _monthDayPicker() {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 8,
+      children: <Widget>[
+        for (int d = 1; d <= 31; d++)
+          _toggleChip(
+            label: '$d',
+            compact: true,
+            selected: _monthDays.contains(d),
+            onTap: () {
+              setState(() {
+                if (_monthDays.contains(d)) {
+                  if (_monthDays.length > 1) _monthDays.remove(d);
+                } else {
+                  _monthDays.add(d);
+                }
+              });
+            },
+          ),
+      ],
+    );
+  }
+
+  /// iOS 风格的圆角胶囊选择片：选中实底主色，未选中浅灰描边
+  Widget _toggleChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+    bool compact = false,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 10 : 14,
+          vertical: compact ? 6 : 8,
+        ),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(
+            color: selected ? AppColors.primary : AppColors.line,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: compact ? AppText.tiny : AppText.caption,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            color: selected ? Colors.white : AppColors.ink,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _timeChip(String hm) {
+    final String? dose = _timeDoses[hm];
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 7, 6, 7),
       decoration: BoxDecoration(
@@ -925,7 +1374,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           Text(
-            hm,
+            dose == null ? hm : '$hm · $dose',
             style: const TextStyle(
               fontSize: AppText.caption,
               fontWeight: FontWeight.w600,
@@ -935,11 +1384,12 @@ class _MedicationEditPageState extends State<MedicationEditPage>
           ),
           const SizedBox(width: 4),
           GestureDetector(
-            onTap: () => _removeTime(hm),
+            // 点时间片 = 编辑这一顿（时间 + 独立剂量）；长按删除走弹窗里的删除
+            onTap: () => _editTime(hm),
             behavior: HitTestBehavior.opaque,
             child: const Padding(
               padding: EdgeInsets.all(2),
-              child: Icon(Icons.close_rounded, size: 14, color: AppColors.primary),
+              child: Icon(Icons.edit_outlined, size: 14, color: AppColors.primary),
             ),
           ),
         ],
@@ -1022,16 +1472,31 @@ class _MedicationEditPageState extends State<MedicationEditPage>
     final String name = _nameCtrl.text.trim();
     final double? dose = double.tryParse(_doseCtrl.text.trim());
     final StringBuffer b = StringBuffer();
-    if (name.isEmpty) {
-      b.write('每天 ');
-    } else {
-      b.write('每天 ');
+    switch (_repeat) {
+      case RepeatType.daily:
+        b.write('每天 ');
+        break;
+      case RepeatType.weekly:
+        final List<int> ws = _weekdays.toList()..sort();
+        b.write('每${ws.map((int w) => kWeekdayNames[w - 1]).join('、')} ');
+        break;
+      case RepeatType.monthly:
+        final List<int> ds = _monthDays.toList()..sort();
+        b.write('每月${ds.join('、')}日 ');
+        break;
     }
     b.write(_times.isEmpty ? '（还没选时间）' : _times.join('、'));
     b.write(' 吃 ');
     b.write(name.isEmpty ? '（还没填药名）' : name);
     b.write(' ');
     b.write(dose == null ? '（还没填剂量）' : '${_fmtNum(dose)} $_unit');
+    if (_timeDoses.isNotEmpty) {
+      final List<String> parts = <String>[
+        for (final String hm in _times)
+          if (_timeDoses[hm] != null) '$hm ${_timeDoses[hm]} $_unit',
+      ];
+      if (parts.isNotEmpty) b.write('（其中 ${parts.join('、')}）');
+    }
     if (_note != null) b.write('，$_note');
     b.write('；${_endDate == null ? '长期服用' : '${_fmtDate(_endDate!)} 停止'}。');
 
@@ -1104,7 +1569,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   }
 
   void _toast(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    showAppToast(context, text);
   }
 
   // --- 工具 -----------------------------------------------------------------

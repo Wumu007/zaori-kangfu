@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'app.dart';
 import 'models/medication.dart';
@@ -30,6 +31,13 @@ Future<void> main() async {
   await AppState.instance.bootstrap();
   await ReminderScheduler.instance
       .scheduleAll(await MedicationRepository.instance.activeMedications());
+
+  // 文件读写权限（V1.3 用户要求：安装/启动时申请一次）。
+  // 只影响 Android 10 及以下的旧式存储；11+ 的系统「保存到」走 SAF 不需要它。
+  // 申请失败不阻塞启动 —— 导出还有应用专属目录兜底。
+  try {
+    await Permission.storage.request();
+  } catch (_) {}
 
   runApp(const MedReminderApp());
 }

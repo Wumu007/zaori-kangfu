@@ -7,12 +7,11 @@ import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui_kit.dart';
 import 'export_flow.dart';
-import 'family_view_page.dart';
 import 'medication_list_page.dart';
 
 /// 「我的」页（设置）
 ///
-/// 只放四类东西：药品入口、家属查看入口、影响提醒行为的设置、权限修复与说明。
+/// 只放三类东西：药品入口、影响提醒行为的设置、权限修复与说明。
 /// 原则：每个开关都必须立刻生效，不做「设了但不生效」的假设置。
 ///
 /// 【Bug 修复记录】「通知里延后多久」下方的选项框互相重叠。
@@ -68,30 +67,15 @@ class SettingsPage extends StatelessWidget {
                 ),
                 children: <Widget>[
                   AppCard(
-                    child: Column(
-                      children: <Widget>[
-                        _NavRow(
-                          icon: Icons.medication_outlined,
-                          title: '药品管理',
-                          subtitle: '添加、编辑、删除药品；可停止提醒并保留历史',
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => const MedicationListPage(),
-                            ),
-                          ),
+                    child: _NavRow(
+                      icon: Icons.medication_outlined,
+                      title: '药品管理',
+                      subtitle: '添加、编辑、删除药品；可停止提醒并保留历史',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const MedicationListPage(),
                         ),
-                        const AppDivider(),
-                        _NavRow(
-                          icon: Icons.people_outline_rounded,
-                          title: '家属查看',
-                          subtitle: state.settings.guestPin == null
-                              ? '本机查看（未设置查看密码）'
-                              : '本机查看已开启 · 需 4 位密码',
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(builder: (_) => const FamilyViewPage()),
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                   const SizedBox(height: AppSpace.gap),
@@ -205,7 +189,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 22),
                   const Center(
                     child: Text(
-                      '早日康复 v1.2.0 · 本地版',
+                      '早日康复 v1.3.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -537,8 +521,9 @@ class _PermissionSheetState extends State<_PermissionSheet>
               const Text(
                 '开关会跳到手机系统的设置页，因为 Android 不允许 App 自己改权限。'
                 '改完返回这里会自动同步。\n'
-                '部分手机（小米、华为、OPPO、vivo 等）还需要打开「后台弹出界面」'
-                '「自启动」「省电策略：不受限制」，否则息屏后提醒可能被拦截。',
+                '到点提醒是闹钟式的：响铃 + 震动 + 全屏弹出，锁屏息屏都会亮屏。'
+                '部分手机（小米、华为、OPPO、vivo 等）还需要在系统设置里打开'
+                '「后台弹出界面」「锁屏显示」「自启动」，并把省电策略设为「不受限制」。',
                 style: TextStyle(
                   fontSize: AppText.tiny,
                   height: 1.6,

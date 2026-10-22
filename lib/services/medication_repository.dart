@@ -38,11 +38,15 @@ class AdherenceStat {
 ///        dose_logs 增加 snooze_minutes（累计延后时长）。
 ///        迁移用 ALTER TABLE 增量加列，不重建表 —— 用户装的是 v1，
 ///        升级后历史记录必须原样还在。
+/// v3 —— 用药计划加 repeat/weekdays/month_days（按周、按月重复）与
+///        dose_values（每个时间点的独立剂量）。同样增量加列：
+///        旧数据这三列读出来是 NULL，模型层归一为「每天 + 默认剂量」，
+///        老用户的计划升级后一天都不会漏。
 class MedicationRepository {
   MedicationRepository._();
   static final MedicationRepository instance = MedicationRepository._();
 
-  static const int _dbVersion = 2;
+  static const int _dbVersion = 3;
   Database? _db;
 
   /// 给备份/导入用的原始连接
@@ -73,7 +77,11 @@ class MedicationRepository {
             end_date TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
             stopped_at TEXT,
-            created_at TEXT
+            created_at TEXT,
+            repeat TEXT,
+            weekdays TEXT,
+            month_days TEXT,
+            dose_values TEXT
           )
         ''');
         await db.execute('''
@@ -105,6 +113,14 @@ class MedicationRepository {
             where: 'status = ?',
             whereArgs: <Object?>['snoozed'],
           );
+        }
+        if (oldVersion < 3) {
+          // v1.3：按周/按月重复 + 每时间点独立剂量。
+          // 全部可空：旧行读出 NULL，模型层归一为「每天 + 默认剂量」
+          await _addColumnIfMissing(db, 'medications', 'repeat', 'TEXT');
+          await _addColumnIfMissing(db, 'medications', 'weekdays', 'TEXT');
+          await _addColumnIfMissing(db, 'medications', 'month_days', 'TEXT');
+          await _addColumnIfMissing(db, 'medications', 'dose_values', 'TEXT');
         }
       },
     );

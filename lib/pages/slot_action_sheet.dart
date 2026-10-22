@@ -43,7 +43,7 @@ Future<void> openSlotActionSheet(BuildContext context, DaySlot slot) async {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '${slot.med.dosageText}'
+                          '${slot.doseText}'
                           '${slot.med.note == null ? '' : ' · ${slot.med.note}'}'
                           ' · ${_dateText(slot.planned)}',
                           style: const TextStyle(
@@ -182,20 +182,10 @@ Future<bool> _confirmSkip(BuildContext context, DaySlot slot) async {
   return ok ?? false;
 }
 
+/// 统一轻提示：2 秒自动消失（带撤销动作 4 秒），弹出前清掉旧条目。
+/// 修复 V1.2「『已记录：XXX，点错了』黑条不消失」的问题。
 void _toast(BuildContext context, String text, {VoidCallback? onUndo}) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(text),
-      duration: Duration(seconds: onUndo == null ? 2 : 4),
-      action: onUndo == null
-          ? null
-          : SnackBarAction(
-              label: '点错了',
-              textColor: Colors.white,
-              onPressed: onUndo,
-            ),
-    ),
-  );
+  showAppToast(context, text, onUndo: onUndo);
 }
 
 String _dateText(DateTime d) {

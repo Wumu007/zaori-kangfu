@@ -106,10 +106,14 @@ class ReminderScheduler {
     await androidImpl?.createNotificationChannel(const AndroidNotificationChannel(
       'med_reminder_channel',
       '服药提醒',
-      description: '到点提醒服药',
+      description: '到点响铃震动并全屏提醒服药',
       importance: Importance.max,
       playSound: true,
       enableVibration: true,
+      enableLights: true,
+      // 声音走「闹钟」音量而不是「通知」音量：
+      // 用户手机常年静音/震动，吃药提醒必须像闹钟一样穿透静音
+      audioAttributesUsage: AudioAttributesUsage.alarm,
     ));
 
     _inited = true;
@@ -333,10 +337,18 @@ class ReminderScheduler {
       android: AndroidNotificationDetails(
         'med_reminder_channel',
         '服药提醒',
-        channelDescription: '到点提醒服药',
+        channelDescription: '到点响铃震动并全屏提醒服药',
         importance: Importance.max,
         priority: Priority.high,
-        category: AndroidNotificationCategory.reminder,
+        category: AndroidNotificationCategory.alarm,
+        // 声音走闹钟音量，穿透媒体静音（与通道一致）
+        audioAttributesUsage: AudioAttributesUsage.alarm,
+        // 闹钟式强提醒：锁屏/息屏时全屏弹出；解锁时是横幅 + 响铃震动
+        fullScreenIntent: true,
+        playSound: true,
+        enableVibration: true,
+        // 亮屏：配合 WAKE_LOCK 权限，息屏时把屏幕点亮
+        channelShowBadge: true,
         // 大字号 + 展开正文，老花眼也看得清
         styleInformation: BigTextStyleInformation(
           body,
@@ -370,8 +382,10 @@ class ReminderScheduler {
         presentAlert: true,
         presentBadge: true,
         presentSound: true,
+        // iOS 侧同理：时效性通知 + 关键音量级别，穿透静音
+        interruptionLevel: InterruptionLevel.critical,
+        criticalSound: true,
         categoryIdentifier: 'med_action',
-        interruptionLevel: InterruptionLevel.timeSensitive,
       ),
     );
   }

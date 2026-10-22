@@ -316,4 +316,162 @@ void _scheduleAndStatusTests() {
       expect(buildSlots(<Medication>[m], DateTime(2026, 3, 5), <String, int>{}), isEmpty);
     });
   });
+
+  group('重复周期（V1.3 按日/周/月）', () {
+    // 2026-03-02 是周一（可查日历：2026-03-01 是周日）
+    final DateTime monday = DateTime(2026, 3, 2);
+    final DateTime sunday = DateTime(2026, 3, 1);
+
+    Medication med({
+      RepeatType repeat = RepeatType.daily,
+      List<int>? weekdays,
+      List<int>? monthDays,
+    }) {
+      return Medication(
+        id: 'm1',
+        name: '降压药',
+        dosageValue: 1,
+        dosageUnit: '片',
+        frequency: FrequencyType.once,
+        times: const <String>['08:00'],
+        repeat: repeat,
+        weekdays: weekdays,
+        monthDays: monthDays,
+        createdAt: DateTime(2026, 1, 1),
+      );
+    }
+
+    test('默认 repeat 是 daily，旧行为不变', () {
+      final Medication m = med();
+      expect(m.repeat, RepeatType.daily);
+      expect(m.coversDay(monday), isTrue);
+      expect(m.coversDay(sunday), isTrue);
+    });
+
+    test('每周一、周四 = 每周两次：周一覆盖，周日不覆盖', () {
+      final Medication m = med(
+        repeat: RepeatType.weekly,
+        weekdays: <int>[DateTime.monday, DateTime.thursday],
+      );
+      expect(m.coversDay(monday), isTrue); // 周一
+      expect(m.coversDay(DateTime(2026, 3, 5)), isTrue); // 周四
+      expect(m.coversDay(sunday), isFalse); // 周日
+      expect(m.frequencyText, contains('每周'));
+    });
+
+    test('每周计划只在勾选的星期产生时间点', () {
+      final Medication m = med(
+        repeat: RepeatType.weekly,
+        weekdays: <int>[DateTime.monday],
+      );
+      expect(
+        buildSlots(<Medication>[m], sunday, <String, int>{}),
+        isEmpty,
+      );
+      expect(
+        buildSlots(<Medication>[m], monday, <String, int>{}).length,
+        1,
+      );
+    });
+
+    test('每月 1、15 号：1 号覆盖，2 号不覆盖', () {
+      final Medication m = med(
+        repeat: RepeatType.monthly,
+        monthDays: <int>[1, 15],
+      );
+      expect(m.coversDay(DateTime(2026, 3, 1)), isTrue);
+      expect(m.coversDay(DateTime(2026, 3, 15)), isTrue);
+      expect(m.coversDay(DateTime(2026, 3, 2)), isFalse);
+    });
+
+    test('月大没有 31 号时按月末兜底（31 号在 4 月按 30 号算）', () {
+      final Medication m = med(
+        repeat: RepeatType.monthly,
+        monthDays: <int>[31],
+      );
+      expect(m.coversDay(DateTime(2026, 4, 30)), isTrue); // 4 月只有 30 天
+      expect(m.coversDay(DateTime(2026, 4, 29)), isFalse);
+    });
+
+    test('空 weekdays/monthDays 归一为默认值，不会全月都不响', () {
+      final Medication w = med(repeat: RepeatType.weekly, weekdays: <int>[]);
+      expect(w.weekdays, isNotEmpty);
+      final Medication mo = med(repeat: RepeatType.monthly, monthDays: <int>[]);
+      expect(mo.monthDays, isNotEmpty);
+    });
+  });
+
+  group('每顿独立剂量（V1.3）', () {
+    test('没配独立剂量时一律用默认剂量', () {
+      final Medication m = Medication(
+        id: 'm1',
+        name: '药',
+        dosageValue: 1,
+        dosageUnit: '片',
+        frequency: FrequencyType.multi,
+        times: const <String>['08:00', '20:00'],
+        createdAt: DateTime(2026, 1, 1),
+      );
+      expect(m.doseValueAt('08:00'), 1);
+      expect(m.doseValueAt('20:00'), 1);
+      expect(m.dosageTextOf('20:00'), '1 片');
+    });
+
+    test('早上 1 片、晚上半片：时间轴每行显示各自的量', () {
+      final Medication m = Medication(
+        id: 'm1',
+        name: '药',
+        dosageValue: 1,
+        dosageUnit: '片',
+        frequency: FrequencyType.multi,
+        times: const <String>['08:00', '20:00'],
+        doseValues: const <double>[1, 0.5],
+        createdAt: DateTime(2026, 1, 1),
+      );
+      expect(m.dosageTextOf('08:00'), '1 片');
+      expect(m.dosageTextOf('20:00'), '0.5 片');
+
+      final List<DaySlot> slots = buildSlots(
+        <Medication>[m],
+        DateTime(2026, 3, 2),
+        <String, int>{},
+      );
+      expect(slots[0].doseText, '1 片');
+      expect(slots[1].doseText, '0.5 片');
+    });
+
+    test('独立剂量缺位或非法时回落默认剂量', () {
+      final Medication m = Medication(
+        id: 'm1',
+        name: '药',
+        dosageValue: 2,
+        dosageUnit: '片',
+        frequency: FrequencyType.multi,
+        times: const <String>['08:00', '20:00'],
+        doseValues: const <double>[0], // 第一位非法（<=0）
+        createdAt: DateTime(2026, 1, 1),
+      );
+      expect(m.doseValueAt('08:00'), 2); // 回落默认
+      expect(m.doseValueAt('20:00'), 2); // 缺位回落默认
+    });
+
+    test('toMap/fromMap 往返保留重复周期与独立剂量', () {
+      final Medication m = Medication(
+        id: 'm1',
+        name: '药',
+        dosageValue: 1,
+        dosageUnit: '片',
+        frequency: FrequencyType.once,
+        times: const <String>['08:00'],
+        repeat: RepeatType.weekly,
+        weekdays: const <int>[1, 4],
+        doseValues: const <double>[1.5],
+        createdAt: DateTime(2026, 1, 1),
+      );
+      final Medication back = Medication.fromMap(m.toMap());
+      expect(back.repeat, RepeatType.weekly);
+      expect(back.weekdays, <int>[1, 4]);
+      expect(back.doseValues, <double>[1.5]);
+    });
+  });
 }

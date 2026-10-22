@@ -208,8 +208,6 @@ class _MedCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final DateTime now = DateTime.now();
-    final int todayCount =
-        med.coversDay(now) && med.enabled ? med.times.length : 0;
 
     return AppCard(
       child: InkWell(
@@ -259,9 +257,15 @@ class _MedCard extends StatelessWidget {
                       foreground: AppColors.warn,
                       background: AppColors.warnSoft,
                     )
+                  else if (!med.coversDay(now))
+                    const SoftBadge(
+                      text: '今天不提醒',
+                      foreground: AppColors.muted,
+                      background: AppColors.surface,
+                    )
                   else
                     SoftBadge(
-                      text: '今天 $todayCount 次',
+                      text: '今天 ${med.times.length} 次',
                       foreground: AppColors.primary,
                       background: AppColors.primarySoft,
                     ),
@@ -364,24 +368,17 @@ class _MedCard extends StatelessWidget {
     if (ok != true) return;
     await AppState.instance.stopMedication(med);
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已停止提醒：${med.name}（历史记录已保留）'),
-        action: SnackBarAction(
-          label: '撤销',
-          textColor: Colors.white,
-          onPressed: () => AppState.instance.resumeMedication(med),
-        ),
-      ),
+    showAppToast(
+      context,
+      '已停止提醒：${med.name}（历史记录已保留）',
+      onUndo: () => AppState.instance.resumeMedication(med),
     );
   }
 
   Future<void> _resume(BuildContext context) async {
     await AppState.instance.resumeMedication(med);
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已恢复提醒：${med.name}')),
-    );
+    showAppToast(context, '已恢复提醒：${med.name}');
   }
 
   Future<void> _delete(BuildContext context) async {
@@ -409,8 +406,6 @@ class _MedCard extends StatelessWidget {
     if (ok != true) return;
     await AppState.instance.deleteMedication(med);
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已删除：${med.name}')),
-    );
+    showAppToast(context, '已删除：${med.name}');
   }
 }

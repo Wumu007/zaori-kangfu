@@ -579,3 +579,36 @@ class StatusBadge extends StatelessWidget {
     }
   }
 }
+
+/// 全局统一的轻提示（SnackBar）
+///
+/// 【Bug 修复】V1.2 反馈「黑色『已记录：XXX，点错了』提示不消失」：
+/// 各页自己 showSnackBar，有的没写 duration（依赖默认 4 秒，部分 ROM 上
+/// 与浮动 behavior 组合后表现成「一直挂着」），有的连续触发时新条目排队
+/// 旧条目不清，视觉上就是「关不掉的黑条」。
+///
+/// 统一规则：
+/// - 弹出前先 [ScaffoldMessenger.clearSnackBars]，同一时刻只有一条；
+/// - 无撤销动作 2 秒自动消失；带「点错了」撤销动作 4 秒（给反应时间）。
+void showAppToast(
+  BuildContext context,
+  String text, {
+  VoidCallback? onUndo,
+}) {
+  final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context)
+    ..clearSnackBars();
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(text, style: const TextStyle(fontSize: AppText.caption)),
+      duration: Duration(seconds: onUndo == null ? 2 : 4),
+      behavior: SnackBarBehavior.floating,
+      action: onUndo == null
+          ? null
+          : SnackBarAction(
+              label: '点错了',
+              textColor: Colors.white,
+              onPressed: onUndo,
+            ),
+    ),
+  );
+}

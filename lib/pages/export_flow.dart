@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/backup_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/ui_kit.dart';
 
 /// 导出区间的三种预设
 ///
@@ -85,24 +88,34 @@ class ExportFlow {
 
   // ------------------------------------------------------------ 内部
 
+  /// 单次导出/导入的最长等待。兜底用：正常导出几秒内完成，
+  /// 超时只可能发生在系统「保存到」界面卡死或 ROM 拦截文件的极端情况。
+  /// 没有这个兜底时遮罩会永远挂着，整个界面像死机 —— V1.2 的实际反馈。
+  static const Duration _timeout = Duration(seconds: 60);
+
   static Future<void> _run(
     BuildContext context, {
     required Future<List<ExportResult>?> Function() action,
     required String emptyHint,
   }) async {
+    _lastAction = action; // 记下这次用的动作，失败弹窗里的「重试」复用它
     final _BusyHandle busy = _BusyHandle.show(context, '正在整理数据…');
     List<ExportResult>? results;
+    Object? failure;
     try {
-      results = await action();
+      results = await action().timeout(_timeout);
     } catch (e) {
+      failure = e;
+    } finally {
+      // 无论成功失败超时，遮罩必须关掉 —— 放在 finally 里保证任何路径都不漏
       busy.close();
-      if (!context.mounted) return;
-      _toast(context, '导出失败：所选位置可能没有写入权限，换个文件夹再试');
-      debugPrint('[Export] 失败: $e');
+    }
+    if (!context.mounted) return;
+
+    if (failure != null) {
+      await _showFailure(context, failure);
       return;
     }
-    busy.close();
-    if (!context.mounted) return;
 
     // null = 用户在自己的「保存到」界面点了取消。什么都不说，
     // 用户知道自己在做什么，弹一句「已取消」纯属打扰。
@@ -110,11 +123,58 @@ class ExportFlow {
 
     final int total = results.fold<int>(0, (int s, ExportResult r) => s + r.rows);
     if (total == 0 || results.isEmpty) {
-      _toast(context, emptyHint);
+      showAppToast(context, emptyHint);
       return;
     }
 
     await _showDone(context, results);
+  }
+
+  /// 失败弹窗：给「换个位置重试」的出路，而不是只弹一句 toast 让用户自己找入口
+  static Future<void> _showFailure(BuildContext context, Object error) {
+    final bool timeout = error is TimeoutException;
+    return showDialog<void>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: Text(timeout ? '等待超时' : '导出失败'),
+        content: Text(
+          timeout
+              ? '系统「保存到」界面长时间没有响应。\n\n'
+                  '可以重试；如果总是超时，请重启手机后再试。'
+              : '所选位置可能没有写入权限。\n\n'
+                  '建议：在「保存到」界面选择「下载」或「文档」这类手机内置文件夹，'
+                  '避免选 SD 卡或网盘目录。',
+          style: const TextStyle(
+            fontSize: AppText.caption,
+            height: 1.7,
+            color: AppColors.sub,
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              // 原样重跑一次（调用方的 action 闭包仍然有效）
+              _retry(context);
+            },
+            child: const Text('重试', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 上一次失败时用的 action，供「重试」复用
+  static Future<List<ExportResult>?> Function()? _lastAction;
+
+  static Future<void> _retry(BuildContext context) async {
+    final Future<List<ExportResult>?> Function()? action = _lastAction;
+    if (action == null) return;
+    await _run(context, action: action, emptyHint: '没有可导出的内容。');
   }
 
   static Future<ExportRange?> _askRange(BuildContext context) {
@@ -230,6 +290,25 @@ class ExportFlow {
                 ),
               ),
             const SizedBox(height: 2),
+            // 用户选的位置写不进去时，文件落在了应用专属目录，必须说明白
+            if (results.any((ExportResult r) => r.path.contains('导出的文件')))
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.warnSoft,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Text(
+                  '你选的文件夹不允许写入，文件已保存到应用文件夹「导出的文件」里'
+                  '（见上方文件名）。要发给别人，可在微信里选择该文件发送。',
+                  style: TextStyle(
+                    fontSize: AppText.tiny,
+                    height: 1.55,
+                    color: AppColors.warn,
+                  ),
+                ),
+              ),
             const Text(
               '文件已保存到你选的位置。\n'
               '用手机上的 WPS 或 Excel 打开表格就能看；纯文字那份可以直接发微信。',
@@ -247,15 +326,6 @@ class ExportFlow {
             child: const Text('好'),
           ),
         ],
-      ),
-    );
-  }
-
-  static void _toast(BuildContext context, String text) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(text, style: const TextStyle(fontSize: AppText.caption)),
-        behavior: SnackBarBehavior.floating,
       ),
     );
   }

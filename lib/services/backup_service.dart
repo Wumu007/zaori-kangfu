@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../models/day_slot.dart';
@@ -92,7 +93,10 @@ class ImportPreview {
 /// 用户如果拿了个别的 CSV 进来，宁可直接说「这不是本 App 的备份」，
 /// 也不要猜字段往库里塞 —— 药名和剂量错了代价太大。
 const String kBackupFormat = 'zaori-kangfu-backup';
-const int kBackupVersion = 1;
+
+/// v2：medications 行增加 repeat/weekdays/month_days/dose_values 四个键。
+/// 读 v1 老备份仍然兼容（缺键按默认值归一）。
+const int kBackupVersion = 2;
 
 /// 导入/导出（纯本地文件，不联网、不上传）
 ///
@@ -174,7 +178,7 @@ class BackupService {
         '单次剂量',
         '剂量单位',
         '服用频次',
-        '每天时间点',
+        '提醒时间',
         '开始日期',
         '结束日期',
         '是否在提醒',
@@ -187,8 +191,8 @@ class BackupService {
         m.name,
         _fmtNum(m.dosageValue),
         m.dosageUnit,
-        m.frequency.label,
-        m.times.join(' / '),
+        m.frequencyText,
+        m.scheduleText,
         _date(m.startDate),
         m.endDate == null ? '长期（持续执行）' : _date(m.endDate),
         m.enabled ? '是' : '否',
@@ -439,6 +443,11 @@ class BackupService {
       'enabled': r['enabled'] ?? 1,
       'stopped_at': r['stopped_at'],
       'created_at': r['created_at'] ?? DateTime.now().toIso8601String(),
+      // v3 新增列：老备份没有这些键时写 NULL，读取时模型层归一为默认值
+      'repeat': r['repeat'],
+      'weekdays': r['weekdays'],
+      'month_days': r['month_days'],
+      'dose_values': r['dose_values'],
     };
   }
 
@@ -457,6 +466,11 @@ class BackupService {
   }
 
   /// 弹系统「保存到」，让用户自己挑位置
+  ///
+  /// 写入失败的兜底（V1.2 实际反馈「所选位置没有写入权限」）：
+  /// SAF 授权只覆盖用户选中的那个文件 Uri，dart:io 按路径写某些位置
+  /// （SD 卡、部分 ROM 的 Downloads）会被系统拒绝。此时**不能**把导出判死 ——
+  /// 降级写到应用专属目录（永远可写），路径原样回传给界面告诉用户文件在哪。
   Future<ExportResult?> _saveText({
     required String suggestedName,
     required String csv,
@@ -473,16 +487,42 @@ class BackupService {
     );
     if (loc == null) return null; // 用户取消
 
-    final File out = File(loc.path);
     final List<int> bytes = <int>[
       // BOM 只给 CSV：Excel/WPS 靠它认出 UTF-8，否则中文药名全是乱码
       if (appendBom) ...<int>[0xEF, 0xBB, 0xBF],
       ...utf8.encode(csv),
     ];
-    await out.writeAsBytes(bytes, flush: true);
 
-    debugPrint('[Backup] 已导出 $title → ${loc.path}（$rows 行）');
-    return ExportResult(path: loc.path, rows: rows, title: title);
+    String savePath = loc.path;
+    try {
+      final File out = File(savePath);
+      await out.writeAsBytes(bytes, flush: true);
+    } catch (e) {
+      // 直接写失败 → 落到应用专属目录
+      final String fallback = await _writeToFallback(suggestedName, bytes);
+      savePath = fallback;
+      debugPrint('[Backup] 选中位置写入失败，已降级保存: $e');
+    }
+
+    debugPrint('[Backup] 已导出 $title → $savePath（$rows 行）');
+    return ExportResult(path: savePath, rows: rows, title: title);
+  }
+
+  /// 写入应用专属导出目录（无需任何权限，卸载前一直存在）
+  Future<String> _writeToFallback(String fileName, List<int> bytes) async {
+    final Directory base = await getApplicationDocumentsDirectory();
+    final Directory dir = Directory(p.join(base.path, '导出的文件'));
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    // 避免重名覆盖：同名文件已存在时追加序号
+    String path = p.join(dir.path, fileName);
+    int i = 1;
+    while (File(path).existsSync()) {
+      final String ext = p.extension(fileName);
+      final String stem = p.basenameWithoutExtension(fileName);
+      path = p.join(dir.path, '$stem(${i++})$ext');
+    }
+    await File(path).writeAsBytes(bytes, flush: true);
+    return path;
   }
 
   /// 把「计划 × 记录」铺成一张可读的表
@@ -538,13 +578,13 @@ class BackupService {
           _date(day),
           s.hm,
           s.med.name,
-          s.med.dosageText,
+          s.doseText,
           st.label,
           st.isTaken ? '已服用' : '未服用',
           s.snoozeMinutes == 0 ? '' : '${s.snoozeMinutes}',
           s.med.note ?? '',
         ].map(_csvCell).join(','));
-        txt.writeln('  ${s.hm}  ${s.med.name} ${s.med.dosageText}  '
+        txt.writeln('  ${s.hm}  ${s.med.name} ${s.doseText}  '
             '${st.isTaken ? '✓ 已服用' : '✗ 未服用（${st.label}）'}');
       }
       txt.writeln();

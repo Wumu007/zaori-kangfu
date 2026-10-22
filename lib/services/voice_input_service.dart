@@ -75,11 +75,17 @@ class VoiceInputService {
   ///
   /// 返回 false 表示没能进入收音状态（多半是麦克风被拒），
   /// 此时 [onError] 已经带着人话说明被调用过了。
+  ///
+  /// [onFinal] 会因**多段断句**被调用多次（说一大段话会分成好几段 final），
+  /// 调用方负责把多段拼接成完整文本。
+  /// [onStopped] 在识别会话结束时回调（自然结束/超时/系统打断），
+  /// UI 靠它退出收音态 —— V1.2「一直显示正在听」就是因为缺这个回调。
   Future<bool> start({
     required void Function(String partialText) onPartial,
     required void Function(String finalText) onFinal,
     required void Function(String readableError) onError,
     void Function(MicGate gate)? onMicBlocked,
+    void Function()? onStopped,
   }) async {
     final MicGate mic = await ensureMic();
     if (mic != MicGate.ok) {
@@ -87,12 +93,14 @@ class VoiceInputService {
       onError(mic == MicGate.permanentlyDenied
           ? '麦克风被关掉了，点这里去设置里打开'
           : '需要麦克风才能说话，点一下允许就行');
+      onStopped?.call();
       return false;
     }
 
     final bool ready = await ensureReady();
     if (!ready) {
       onError('这台手机的语音识别用不了，可以改用键盘输入');
+      onStopped?.call();
       return false;
     }
 
@@ -106,6 +114,7 @@ class VoiceInputService {
         }
       },
       onError: (message) => onError(_humanizeError(message)),
+      onStopped: onStopped,
     );
     return true;
   }

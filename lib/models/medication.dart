@@ -46,6 +46,40 @@ enum FrequencyType {
       timeCount <= 1 ? FrequencyType.once : FrequencyType.multi;
 }
 
+/// 服药日的重复周期（V1.3 新增）
+///
+/// 与 [FrequencyType] 的分工：FrequencyType 回答「一天吃几次」，
+/// RepeatType 回答「哪些天吃」。两维正交，互不替代。
+/// - [daily]   每天（旧行为，默认值，老数据迁移后语义不变）
+/// - [weekly]  每周指定星期几，如「每周二、周四」= 每周两次
+/// - [monthly] 每月指定几号，如「每月 1、15 日」
+enum RepeatType {
+  daily('每天'),
+  weekly('每周'),
+  monthly('每月');
+
+  const RepeatType(this.label);
+  final String label;
+
+  /// 兼容旧库：没有 repeat 列的数据一律按 daily
+  static RepeatType fromName(String? value) {
+    switch (value) {
+      case 'weekly':
+        return RepeatType.weekly;
+      case 'monthly':
+        return RepeatType.monthly;
+      case 'daily':
+      default:
+        return RepeatType.daily;
+    }
+  }
+}
+
+/// ISO 星期号 → 中文（1 = 周一 … 7 = 周日），录入页与导出共用
+const List<String> kWeekdayNames = <String>[
+  '周一', '周二', '周三', '周四', '周五', '周六', '周日',
+];
+
 /// 剂量单位候选（录入页与语音解析共用一份，避免两处不一致）
 const List<String> kDosageUnits = <String>[
   '片',
@@ -76,12 +110,21 @@ class Medication {
     this.enabled = true,
     this.stoppedAt,
     this.createdAt,
-  });
+    this.repeat = RepeatType.daily,
+    List<int>? weekdays,
+    List<int>? monthDays,
+    this.doseValues,
+  })  : weekdays = (weekdays == null || weekdays.isEmpty)
+            ? const <int>[DateTime.monday]
+            : (weekdays.toList()..sort()),
+        monthDays = (monthDays == null || monthDays.isEmpty)
+            ? const <int>[1]
+            : (monthDays.toList()..sort());
 
   final String id;
   final String name;
 
-  /// 每次剂量数值，如 1、0.5、100
+  /// 每次剂量数值（默认剂量），如 1、0.5、100
   final double dosageValue;
 
   /// 剂量单位，见 [kDosageUnits]
@@ -89,8 +132,23 @@ class Medication {
 
   final FrequencyType frequency;
 
-  /// 每天提醒时间点，格式 'HH:mm'，按时间升序、无重复
+  /// 提醒时间点，格式 'HH:mm'，按时间升序、无重复
   final List<String> times;
+
+  /// 重复周期（V1.3）：每天 / 每周指定日 / 每月指定日
+  final RepeatType repeat;
+
+  /// 每周服药的星期号（ISO：1=周一 … 7=周日），仅 [RepeatType.weekly] 有效。
+  /// 构造时空列表会归一为 [DateTime.monday]，保证「每周两次」这类语义总有落点。
+  final List<int> weekdays;
+
+  /// 每月服药的日期号（1-31），仅 [RepeatType.monthly] 有效。
+  /// 大于当月天数的号自动落到当月最后一天（如 31 号在 4 月按 30 号算）。
+  final List<int> monthDays;
+
+  /// 每个时间点的独立剂量，与 [times] 按下标对齐；null 或缺位 = 用默认剂量
+  /// [dosageValue]。典型场景：早上 1 片、晚上半片。
+  final List<double>? doseValues;
 
   /// 备注：饭前 / 饭后 / 随餐 / 空腹 / 睡前
   final String? note;
@@ -119,21 +177,58 @@ class Medication {
     return '$v $dosageUnit';
   }
 
+  /// 某个时间点该吃多少：优先读 [doseValues] 里对应该时间点的独立剂量，
+  /// 没配独立剂量时回落到默认 [dosageValue]。
+  double doseValueAt(String hm) {
+    final List<double>? v = doseValues;
+    if (v == null) return dosageValue;
+    final int i = times.indexOf(hm);
+    if (i < 0 || i >= v.length) return dosageValue;
+    final double? d = v[i];
+    return d == null || d <= 0 ? dosageValue : d;
+  }
+
+  /// 某个时间点的剂量文案（首页/记录页/导出统一走这里）
+  String dosageTextOf(String hm) {
+    final double v = doseValueAt(hm);
+    final String n = v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+    return '$n $dosageUnit';
+  }
+
   /// 通知正文：「降压药 · 1 片 · 饭后」
   String get notificationBody => '$name · $dosageText';
 
-  /// 频次文案：「每日一次」「每日两次」「自定义 3 个时间」
+  /// 频次文案：「每天 08:00」「每周二、周四 2 次」「每月 1、15 日 3 次」
   String get frequencyText {
-    if (frequency == FrequencyType.custom) {
-      return '自定义 ${times.length} 个时间';
+    switch (repeat) {
+      case RepeatType.weekly:
+        final String days = weekdays.map((int w) => kWeekdayNames[w - 1]).join('、');
+        return '每周$days · ${times.length} 次';
+      case RepeatType.monthly:
+        final String days = monthDays.join('、');
+        return '每月 $days 日 · ${times.length} 次';
+      case RepeatType.daily:
+        if (frequency == FrequencyType.custom) {
+          return '自定义 ${times.length} 个时间';
+        }
+        if (times.length <= 1) return '每日一次';
+        return '每日${_cnNumber(times.length)}次';
     }
-    if (times.length <= 1) return '每日一次';
-    return '每日${_cnNumber(times.length)}次';
   }
 
-  /// 计划文案：「每天 08:00」/「每天 08:00、20:00」
-  String get scheduleText =>
-      times.isEmpty ? '未设置时间' : '每天 ${times.join('、')}';
+  /// 计划文案：「每天 08:00、20:00」「周二、周四 08:00」
+  String get scheduleText {
+    if (times.isEmpty) return '未设置时间';
+    final String t = times.join('、');
+    switch (repeat) {
+      case RepeatType.weekly:
+        return '${weekdays.map((int w) => kWeekdayNames[w - 1]).join('、')} $t';
+      case RepeatType.monthly:
+        return '每月${monthDays.join('、')}日 $t';
+      case RepeatType.daily:
+        return '每天 $t';
+    }
+  }
 
   /// 有效期文案：「长期」「2026-10-22 起」「2026-10-22 ~ 2026-12-31」
   String get periodText {
@@ -158,14 +253,29 @@ class Medication {
 
   // ---------------------------------------------------------------- 日期判定
 
-  /// 某一天这条计划是否生效（按起止日期判定，不看 enabled）
+  /// 某一天这条计划是否生效（按重复周期 + 起止日期判定，不看 enabled）
   bool coversDay(DateTime day) {
     final DateTime d = DateTime(day.year, day.month, day.day);
     final DateTime? s = startDate;
     if (s != null && d.isBefore(DateTime(s.year, s.month, s.day))) return false;
     final DateTime? e = endDate;
     if (e != null && d.isAfter(DateTime(e.year, e.month, e.day))) return false;
-    return true;
+
+    // 重复周期判定
+    switch (repeat) {
+      case RepeatType.daily:
+        return true;
+      case RepeatType.weekly:
+        return weekdays.contains(d.weekday);
+      case RepeatType.monthly:
+        // 「31 号」这类当月不存在的日期，自动落到当月最后一天，
+        // 否则 2 月、4 月会整月都不响，用户以为 App 坏了
+        final int lastDay = DateTime(d.year, d.month + 1, 0).day;
+        if (d.day == lastDay && monthDays.any((int m) => m > lastDay)) {
+          return true;
+        }
+        return monthDays.contains(d.day);
+    }
   }
 
   /// 某一天是否**还会**产生提醒：生效 + 未停用 + 未过期
@@ -186,6 +296,11 @@ class Medication {
     DateTime? stoppedAt,
     bool clearEndDate = false,
     bool clearStoppedAt = false,
+    RepeatType? repeat,
+    List<int>? weekdays,
+    List<int>? monthDays,
+    List<double>? doseValues,
+    bool clearDoseValues = false,
   }) {
     return Medication(
       id: id,
@@ -200,6 +315,10 @@ class Medication {
       enabled: enabled ?? this.enabled,
       stoppedAt: clearStoppedAt ? null : (stoppedAt ?? this.stoppedAt),
       createdAt: createdAt,
+      repeat: repeat ?? this.repeat,
+      weekdays: weekdays ?? this.weekdays,
+      monthDays: monthDays ?? this.monthDays,
+      doseValues: clearDoseValues ? null : (doseValues ?? this.doseValues),
     );
   }
 
@@ -216,26 +335,58 @@ class Medication {
         'enabled': enabled ? 1 : 0,
         'stopped_at': stoppedAt?.toIso8601String(),
         'created_at': (createdAt ?? DateTime.now()).toIso8601String(),
+        'repeat': repeat.name,
+        'weekdays': repeat == RepeatType.weekly ? weekdays.join(',') : null,
+        'month_days': repeat == RepeatType.monthly ? monthDays.join(',') : null,
+        'dose_values': doseValues?.map(_fmtNum).join(','),
       };
 
-  static Medication fromMap(Map<String, Object?> map) => Medication(
-        id: map['id'] as String,
-        name: map['name'] as String,
-        dosageValue: (map['dosage_value'] as num).toDouble(),
-        dosageUnit: map['dosage_unit'] as String,
-        frequency: FrequencyType.fromName(map['frequency'] as String?),
-        times: (map['times'] as String? ?? '')
-            .split(',')
-            .where((String e) => e.isNotEmpty)
-            .toList()
-          ..sort(),
-        note: map['note'] as String?,
-        startDate: _parseDate(map['start_date']),
-        endDate: _parseDate(map['end_date']),
-        enabled: (map['enabled'] as int? ?? 1) == 1,
-        stoppedAt: _parseDate(map['stopped_at']),
-        createdAt: _parseDate(map['created_at']),
-      );
+  static Medication fromMap(Map<String, Object?> map) {
+    final RepeatType repeat = RepeatType.fromName(map['repeat'] as String?);
+    return Medication(
+      id: map['id'] as String,
+      name: map['name'] as String,
+      dosageValue: (map['dosage_value'] as num).toDouble(),
+      dosageUnit: map['dosage_unit'] as String,
+      frequency: FrequencyType.fromName(map['frequency'] as String?),
+      times: (map['times'] as String? ?? '')
+          .split(',')
+          .where((String e) => e.isNotEmpty)
+          .toList()
+        ..sort(),
+      note: map['note'] as String?,
+      startDate: _parseDate(map['start_date']),
+      endDate: _parseDate(map['end_date']),
+      enabled: (map['enabled'] as int? ?? 1) == 1,
+      stoppedAt: _parseDate(map['stopped_at']),
+      createdAt: _parseDate(map['created_at']),
+      repeat: repeat,
+      weekdays: repeat == RepeatType.weekly
+          ? _parseIntList(map['weekdays'] as String?)
+          : null,
+      monthDays: repeat == RepeatType.monthly
+          ? _parseIntList(map['month_days'] as String?)
+          : null,
+      doseValues: _parseDoubleList(map['dose_values'] as String?),
+    );
+  }
+
+  static List<int> _parseIntList(String? raw) => (raw ?? '')
+      .split(',')
+      .map((String e) => int.tryParse(e.trim()) ?? 0)
+      .where((int e) => e > 0)
+      .toList();
+
+  static List<double>? _parseDoubleList(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    final List<double> out = raw
+        .split(',')
+        .map((String e) => double.tryParse(e.trim()))
+        .whereType<double>()
+        .where((double v) => v > 0)
+        .toList();
+    return out.isEmpty ? null : out;
+  }
 
   static DateTime? _parseDate(Object? raw) {
     if (raw is! String || raw.isEmpty) return null;
@@ -245,6 +396,9 @@ class Medication {
   static String _fmtDate(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-'
       '${d.day.toString().padLeft(2, '0')}';
+
+  static String _fmtNum(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toString();
 
   static String _cnNumber(int n) {
     const List<String> table = <String>['零', '一', '二', '三', '四', '五', '六'];
