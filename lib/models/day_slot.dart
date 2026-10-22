@@ -66,7 +66,7 @@ class DaySlot {
     final String base = med.note == null || med.note!.isEmpty
         ? med.dosageText
         : '${med.dosageText} · ${med.note}';
-    final String? s = status;
+    final IntakeStatus? s = status;
     if (s == null) return base;
     if (s == IntakeStatus.pending && snoozeMinutes > 0) {
       return '$base · 已延后 $snoozeMinutes 分钟';

@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import 'app.dart';
-import 'models/day_slot.dart';
 import 'models/medication.dart';
 import 'services/medication_repository.dart';
 import 'services/reminder_scheduler.dart';

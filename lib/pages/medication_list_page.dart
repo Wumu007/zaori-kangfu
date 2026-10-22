@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../models/day_slot.dart';
 import '../models/medication.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';

@@ -23,3 +23,10 @@ android/key.properties
 # ---- 系统 ----
 .DS_Store
 Thumbs.db
+
+# ---- 排查临时产物（GitHub Actions 日志抓取等）----
+logs.zip
+runs.json
+jobs.json
+runid.txt
+step.txt

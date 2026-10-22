@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../models/day_slot.dart';
 import '../models/medication.dart';
@@ -70,7 +71,7 @@ class HomePage extends StatelessWidget {
       ),
       children: <Widget>[
         // 通知权限没拿到时，必须明说，否则用户会以为 App 坏了
-        if (!state.notificationGranted) const PermissionBanner(),
+        if (!state.notificationGranted) const _PermissionBanner(),
         if (state.todayTotal > 0) _ProgressCard(state: state),
         const SizedBox(height: 16),
         Row(
@@ -403,6 +404,81 @@ class _SlotTile extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 通知权限缺失提示条
+///
+/// 【为什么必须有】用户装完 App 直接进首页，如果通知权限没给，
+/// 到点了什么都不会响，但界面上看不出任何异常 —— 用户只会以为 App 坏了。
+/// 所以这里必须显式提示，并给一个直达系统设置的按钮。
+class _PermissionBanner extends StatelessWidget {
+  const _PermissionBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      decoration: BoxDecoration(
+        color: AppColors.warnSoft,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: const Color(0xFFFADFC0)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Padding(
+            padding: EdgeInsets.only(top: 1),
+            child: Icon(
+              Icons.notifications_off_outlined,
+              size: 18,
+              color: AppColors.warn,
+            ),
+          ),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  '通知没打开，到点不会提醒',
+                  style: TextStyle(
+                    fontSize: AppText.caption,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.warn,
+                  ),
+                ),
+                SizedBox(height: 3),
+                Text(
+                  '点右边「去开启」，允许通知并打开闹钟，提醒才会准时响。',
+                  style: TextStyle(
+                    fontSize: AppText.tiny,
+                    height: 1.45,
+                    color: AppColors.sub,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 6),
+          TextButton(
+            onPressed: () => openAppSettings(),
+            style: TextButton.styleFrom(
+              minimumSize: const Size(0, 32),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              foregroundColor: AppColors.warn,
+              textStyle: const TextStyle(
+                fontSize: AppText.caption,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            child: const Text('去开启'),
+          ),
+        ],
       ),
     );
   }

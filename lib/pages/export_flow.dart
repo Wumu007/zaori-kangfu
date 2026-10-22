@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../services/backup_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/ui_kit.dart';
 
 /// 导出区间的三种预设
 ///
@@ -268,10 +267,9 @@ class ExportFlow {
 
 /// 「处理中」遮罩：导出/导入可能读几千行，给个明确反馈
 class _BusyHandle {
-  _BusyHandle._(this._entry, this._navigator);
+  _BusyHandle._(this._entry);
 
   final OverlayEntry _entry;
-  final NavigatorState _navigator;
 
   static _BusyHandle show(BuildContext context, String text) {
     final OverlayEntry entry = OverlayEntry(
@@ -308,7 +306,7 @@ class _BusyHandle {
     );
     final NavigatorState nav = Navigator.of(context);
     nav.overlay?.insert(entry);
-    return _BusyHandle._(entry, nav);
+    return _BusyHandle._(entry);
   }
 
   void close() {

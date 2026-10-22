@@ -290,7 +290,6 @@ class ReminderScheduler {
     required String name,
     int minutes = 10,
   }) async {
-    final DateTime now = DateTime.now();
     // 先取消原通知，避免「稍后提醒」点完原通知又响一遍
     await cancelSlot(medicationId, planned);
 
