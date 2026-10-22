@@ -2,6 +2,9 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import '../services/medication_repository.dart';
+import '../services/reminder_scheduler.dart';
+import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
 import 'history_page.dart';
@@ -23,8 +26,47 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // V1.5.0：回到前台时重新对齐通知排期
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // vivo/小米等 ROM 的省电策略会**静默取消**第三方 App 已排的闹钟。
+  // 冷启动时 main.dart 会重建排期，但「App 一直在后台留着、只是切
+  // 出去再切回来」的场景之前没人管 —— 万一排期被系统清了，就得等
+  // 用户下次冷启动才补上。
+  //
+  // scheduleAll 只排未来时刻、同 id 覆盖，重复调用是安全的；
+  // 不调 cancelAll，已排好的通知不会被误清。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    _resyncSilently();
+  }
+
+  Future<void> _resyncSilently() async {
+    try {
+      await ReminderScheduler.instance.scheduleAll(
+          await MedicationRepository.instance.activeMedications());
+      await AppState.instance.refresh();
+    } catch (_) {
+      // 对齐失败不打扰用户，冷启动时还有一次机会
+    }
+  }
 
   void _go(int i) {
     if (_index == i) return;

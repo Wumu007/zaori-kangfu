@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/medication.dart';
 import '../models/medication_draft.dart';
 import '../services/medication_nlu.dart';
+import '../services/voice_diag.dart';
 import '../services/voice_input_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -157,6 +158,15 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   // ---------------------------------------------------------------------------
   // 语音：实时转写 → 结束自动填入 → 结果可改再重新填入
   // ---------------------------------------------------------------------------
+
+  /// 复制语音诊断日志（失败时用户把它发回来，我们就能定位卡在哪一步）
+  Future<void> _copyVoiceDiag() async {
+    await Clipboard.setData(
+      ClipboardData(text: VoiceDiag.instance.report()),
+    );
+    if (!mounted) return;
+    showAppToast(context, '诊断信息已复制，可粘贴发给我们');
+  }
 
   Future<void> _startVoice() async {
     // 上一轮的「无语音服务」结论不清空：重试也没用，留着让用户看到真实原因；
@@ -752,8 +762,8 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   // --- 语音区 ---------------------------------------------------------------
 
   Widget _voiceEntryCard() {
-    // 这台手机没有语音服务：不再给一个「点了也没反应」的麦克风按钮，
-    // 换成一张说明卡 —— 用户最容易犯的错就是对着一台没装语音服务的手机反复说话。
+    // 插件路径和系统语音对话框都没成：不再给一个「点了也没反应」的
+    // 麦克风按钮，换成说明卡 + 诊断信息入口。
     if (_voiceFatal) {
       return Container(
         padding: const EdgeInsets.all(14),
@@ -762,38 +772,62 @@ class _MedicationEditPageState extends State<MedicationEditPage>
           borderRadius: BorderRadius.circular(AppRadius.card),
           border: Border.all(color: AppColors.hairline, width: 0.5),
         ),
-        child: Row(
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            const AppIconTile(
-              AppIcons.micOff,
-              tone: AppIconTone.gray,
-              size: 34,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const AppIconTile(
+                  AppIcons.micOff,
+                  tone: AppIconTone.gray,
+                  size: 34,
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        '这台手机暂时用不了语音',
+                        style: TextStyle(
+                          fontSize: AppText.bodySm,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.ink,
+                        ),
+                      ),
+                      SizedBox(height: 3),
+                      Text(
+                        '系统和语音服务都没有响应。用下面的表单填写一样快，'
+                        '药名、剂量、时间填好就能保存。',
+                        style: TextStyle(
+                          fontSize: AppText.tiny,
+                          height: 1.5,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(width: 12),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    '这台手机暂时用不了语音',
-                    style: TextStyle(
-                      fontSize: AppText.bodySm,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.ink,
-                    ),
-                  ),
-                  SizedBox(height: 3),
-                  Text(
-                    '系统里没找到语音识别服务。用下面的表单填写一样快，'
-                    '药名、剂量、时间填好就能保存。',
-                    style: TextStyle(
-                      fontSize: AppText.tiny,
-                      height: 1.5,
-                      color: AppColors.muted,
-                    ),
-                  ),
-                ],
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _copyVoiceDiag,
+                icon: const Icon(Icons.copy_rounded, size: 15),
+                label: const Text(
+                  '复制诊断信息',
+                  style: TextStyle(fontSize: AppText.tiny),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.muted,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
               ),
             ),
           ],

@@ -38,6 +38,13 @@
          Android 14+ 系统会按「闹钟/来电类」自动授予，无需手动开 -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
+    <!-- V1.5.0：申请「忽略电池优化」白名单。
+         vivo/小米/OPPO 等会冻结后台应用并取消第三方 App 的闹钟 ——
+         这是「前台收得到、后台/被杀收不到」的直接原因。
+         白名单通过系统确认框由用户手动允许（设置页有入口），
+         Google Play 对闹钟/提醒类 App 允许申请此权限 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- 语音识别 / TTS 在 Android 11+ 需要显式声明可见性 -->
     <queries>
         <intent>

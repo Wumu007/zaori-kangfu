@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../services/backup_service.dart';
+import '../services/native_bridge.dart';
 import '../services/reminder_scheduler.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -111,6 +112,11 @@ class SettingsPage extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: AppSpace.gap),
+                  // V1.5.0：电池白名单 —— 「后台/锁屏收不到提醒」的主要解法。
+                  // vivo/小米/OPPO 的省电策略会冻结后台应用并取消其闹钟，
+                  // 通知权限全开也一样收不到。加入电池优化白名单是标准解法。
+                  const _BatteryRow(),
+                  const SizedBox(height: AppSpace.gap),
                   AppCard(
                     shadow: true,
                     child: Column(
@@ -213,7 +219,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.4.0 · 本地版',
+                      '早日康复 v1.5.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -990,6 +996,119 @@ class _ToneSwitchTile extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 「保持后台运行」行：电池优化白名单 + 排程自检
+///
+/// ═══════════════════════════════════════════════════════════════════
+/// 为什么这一行是 V1.5.0 的关键（对应实测「后台/锁屏收不到提醒」）
+/// ═══════════════════════════════════════════════════════════════════
+///
+/// 通知权限、精确闹钟、渠道配置全对，前台也确实收得到 —— 但 App 一旦
+/// 切到后台/被杀，到点就没声音。这是 vivo/小米等 ROM 的「应用速冻/
+/// 深度清理」在冻结进程时**连同取消它排的闹钟**。
+///
+/// 软件层能做的只有两件事：
+/// 1. 请求「忽略电池优化」白名单（系统确认框，用户点允许）——
+///    白名单里的 App，系统不再冻结、闹钟不被清除；
+/// 2. 把「已排程 N 条、下一次几点」显示出来 —— 如果 N 明显比药次少，
+///    说明排期被系统清了，用户就知道问题出在系统设置而不是 App。
+class _BatteryRow extends StatefulWidget {
+  const _BatteryRow();
+
+  @override
+  State<_BatteryRow> createState() => _BatteryRowState();
+}
+
+class _BatteryRowState extends State<_BatteryRow> with WidgetsBindingObserver {
+  /// 是否已在电池优化白名单（null = 还没查完，先按已允许显示避免闪警告）
+  bool? _whitelisted;
+
+  /// 已排程的通知数量与最近一次时刻（排期自检）
+  int _scheduledCount = 0;
+  DateTime? _nextAt;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // 用户从系统电池设置回来时重查一次真实状态
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final bool ok = await NativeBridge.isIgnoringBatteryOptimizations;
+      final ({int count, DateTime? next}) st =
+          await ReminderScheduler.instance.scheduleStatus();
+      if (!mounted) return;
+      setState(() {
+        _whitelisted = ok;
+        _scheduledCount = st.count;
+        _nextAt = st.next;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _request() async {
+    await NativeBridge.requestIgnoreBatteryOptimizations();
+    // 系统确认框回来后 didChangeAppLifecycleState 会触发重查；
+    // 这里再兜底查一次（部分 ROM 不发 resumed）
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    _refresh();
+  }
+
+  String get _subtitle {
+    final StringBuffer sb = StringBuffer();
+    if (_whitelisted == true) {
+      sb.write('已加入电池白名单，后台也能响');
+    } else if (_whitelisted == false) {
+      sb.write('没开的话，切后台或锁屏后提醒可能不响 —— 点这里允许');
+    } else {
+      sb.write('检查中…');
+    }
+    if (_scheduledCount > 0) {
+      sb.write('；已排程 $_scheduledCount 条');
+      final DateTime? n = _nextAt;
+      if (n != null) {
+        final String hh = n.hour.toString().padLeft(2, '0');
+        final String mm = n.minute.toString().padLeft(2, '0');
+        final bool today =
+            n.year == DateTime.now().year && n.month == DateTime.now().month && n.day == DateTime.now().day;
+        sb.write(today ? '，下一次 $hh:$mm' : '，下一次 ${n.month}月${n.day}日 $hh:$mm');
+      }
+    } else if (_scheduledCount == 0 && _whitelisted == true) {
+      sb.write('；当前没有待响的提醒');
+    }
+    return sb.toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool ok = _whitelisted != false;
+    return AppCard(
+      shadow: true,
+      child: AppNavRow(
+        icon: ok ? AppIcons.shield : AppIcons.warning,
+        tone: ok ? AppIconTone.green : AppIconTone.orange,
+        title: ok ? '保持后台运行' : '保持后台运行（重要）',
+        subtitle: _subtitle,
+        onTap: ok ? null : _request,
+        showChevron: !ok,
       ),
     );
   }

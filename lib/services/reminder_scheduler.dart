@@ -260,6 +260,13 @@ class ReminderScheduler {
     await android?.requestExactAlarmsPermission();
   }
 
+  /// 冷启动信息：App 是否由点通知拉起、那条通知的 payload/actionId
+  ///
+  /// 只在 init() 之后调用有效。用于「锁屏时点了到点提醒 → 冷启动直接
+  /// 进响铃页」的判断（main.dart）。
+  Future<NotificationAppLaunchDetails?> get launchDetails =>
+      _plugin.getNotificationAppLaunchDetails();
+
   // ------------------------------------------------------------------ id
 
   /// 通知 id：同一天同一时间点的通知永远落到同一个 id 上
@@ -282,7 +289,35 @@ class ReminderScheduler {
         'at': when.toIso8601String(),
         'name': med.name,
         'body': med.notificationBody,
+        // V1.5.0：带响铃标志 —— 到点的提醒通知点开后进「响铃页」
+        //（循环铃声直到用户点已服药/稍后/跳过），而不是普通清单页
+        'ring': '1',
       });
+
+  // -------------------------------------------------- 排程自检（诊断）
+
+  /// 已排程提醒的数量与最近一次的时刻
+  ///
+  /// vivo/小米等 ROM 会静默取消第三方 App 的闹钟，用户感知不到。
+  /// 设置页显示「已排程 N 条，下一次 MM-dd HH:mm」：
+  /// 数字明显变少 = 被系统清了，引导用户加电池白名单。
+  Future<({int count, DateTime? next})> scheduleStatus() async {
+    try {
+      final List<PendingNotificationRequest> pending =
+          await _plugin.pendingNotificationRequests();
+      DateTime? next;
+      for (final PendingNotificationRequest p in pending) {
+        try {
+          final data = jsonDecode(p.payload ?? '') as Map<String, dynamic>;
+          final DateTime? at = DateTime.tryParse(data['at'] as String? ?? '');
+          if (at != null && (next == null || at.isBefore(next))) next = at;
+        } catch (_) {}
+      }
+      return (count: pending.length, next: next);
+    } catch (_) {
+      return (count: 0, next: null);
+    }
+  }
 
   // ------------------------------------------------------------------ 排期
 
@@ -430,6 +465,7 @@ class ReminderScheduler {
           'at': planned.toIso8601String(),
           'name': name,
           'body': body,
+          'ring': '1',
         }),
       );
     } on PlatformException catch (e) {
@@ -451,6 +487,7 @@ class ReminderScheduler {
               'at': planned.toIso8601String(),
               'name': name,
               'body': body,
+              'ring': '1',
             }),
           );
         } catch (_) {

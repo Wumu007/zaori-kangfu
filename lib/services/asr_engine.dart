@@ -4,6 +4,8 @@ import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
+import 'voice_diag.dart';
+
 /// 语音识别失败时，UI 需要知道「属于哪一类问题」，才能给对不同的话。
 ///
 /// V1.4.0 新增：之前所有失败都变成同一句「没听清，再说一次」，
@@ -124,14 +126,17 @@ class SystemAsrEngine implements AsrEngine {
   @override
   Future<bool> init() async {
     if (_ready) return true;
+    final VoiceDiag diag = VoiceDiag.instance;
     // 先确认系统给没给录音权限：没权限时 initialize 必然 false，
     // 但我们要把原因说清（去设置里开）而不是笼统说「不可用」。
     bool hasPerm = false;
     try {
       hasPerm = await _speech.hasPermission;
-    } catch (_) {
+    } catch (e) {
       hasPerm = false;
+      diag.log('hasPermission 查询异常', '$e');
     }
+    diag.log('录音权限', hasPerm ? '有' : '没有');
     if (!hasPerm) {
       _ready = false;
       return false;
@@ -140,12 +145,14 @@ class SystemAsrEngine implements AsrEngine {
     try {
       _ready = await _speech.initialize(
         onError: (SpeechRecognitionError e) {
+          VoiceDiag.instance.log('initialize onError', '${e.errorMsg} permanent=${e.permanent}');
           final kind = _classify(e.errorMsg);
           _errorCb?.call(e.errorMsg, kind);
           // 致命错误（无权限/无服务）必须收尾，否则界面停在「正在听」
           if (e.permanent) _reportStopped();
         },
         onStatus: (String status) {
+          VoiceDiag.instance.log('onStatus', status);
           // 插件可能发：listening / notListening / done / doneNoResult
           if (status == 'done' ||
               status == 'notListening' ||
@@ -159,8 +166,10 @@ class SystemAsrEngine implements AsrEngine {
         // 线上关掉；排查特定机型时改成 true，日志会进 logcat
         debugLogging: false,
       );
-    } catch (_) {
+      diag.log('initialize 结果', _ready ? '成功' : '返回 false');
+    } catch (e) {
       _ready = false;
+      diag.log('initialize 异常', '$e');
       return false;
     }
     return _ready;
@@ -171,8 +180,12 @@ class SystemAsrEngine implements AsrEngine {
   /// 这一步同时充当「有没有语音服务」的判断：`locales()` 空列表
   /// 或抛异常，基本就是没有可用的识别服务。
   Future<String?> _resolveChineseLocale() async {
+    final VoiceDiag diag = VoiceDiag.instance;
     try {
       final locales = await _speech.locales();
+      final String names =
+          locales.take(10).map((l) => l.localeId).join(', ');
+      diag.log('可用语音语言', locales.isEmpty ? '（空）' : names);
       if (locales.isEmpty) return null;
       for (final l in locales) {
         final low = l.localeId.toLowerCase().replaceAll('_', '-');
@@ -183,8 +196,10 @@ class SystemAsrEngine implements AsrEngine {
       for (final l in locales) {
         if (l.localeId.toLowerCase().startsWith('zh')) return l.localeId;
       }
+      diag.log('无中文语言', '共 ${locales.length} 种，见上一条');
       return null;
-    } catch (_) {
+    } catch (e) {
+      diag.log('locales 查询异常', '$e');
       return null;
     }
   }
@@ -267,6 +282,7 @@ class SystemAsrEngine implements AsrEngine {
     _watchdog?.cancel();
     _watchdog = Timer(_watchdogTimeout, () {
       if (!_gotAnyText && !_stoppedReported) {
+        VoiceDiag.instance.log('看门狗超时', '${_watchdogTimeout.inSeconds} 秒内无任何结果');
         _errorCb?.call('watchdog_timeout', AsrFailure.heardNothing);
         _reportStopped();
         _speech.cancel();

@@ -1,11 +1,265 @@
 package com.medreminder.med_reminder
 
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.RingtoneManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.provider.Settings
+import android.speech.RecognizerIntent
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
 /**
- * 入口 Activity。
+ * 入口 Activity + 原生能力桥。
  *
- * 不需要任何额外配置：通知的点击/按钮事件由 flutter_local_notifications
- * 自己的 Receiver 接收后转给 Flutter 侧，不走 Activity。
+ * V1.5.0 起承担四件事（都经 MethodChannel `med_reminder/native` 暴露给 Dart）：
+ *
+ * 1. showSystemSpeechDialog —— 系统「语音输入」对话框。
+ *    speech_to_text 插件的服务连接方式在 vivo/iQOO 上不可靠（V1.3/V1.4 两版
+ *    真机均无反应），而 ACTION_RECOGNIZE_SPEECH 是所有语音引擎都实现的标准
+ *    Intent，微信语音转文字也走这条路 —— 作为插件路径失败后的兜底。
+ *
+ * 2. ringStart / ringStop —— 循环响铃。
+ *    通知铃声只播一遍是系统行为，想「响到用户处理为止」必须自己播。
+ *    MediaPlayer 循环 + Vibrator 循环波形，音量走闹钟流。
+ *
+ * 3. keepScreenOn —— 响铃页常亮。
+ *
+ * 4. 电池优化白名单 —— vivo/小米等 ROM 会冻结后台应用并取消第三方闹钟，
+ *    这是「后台/锁屏收不到提醒」的第一解法。
  */
-class MainActivity : FlutterActivity()
+class MainActivity : FlutterActivity() {
+
+    companion object {
+        private const val CHANNEL = "med_reminder/native"
+        private const val REQ_SPEECH = 40001
+
+        // ═══════════════════════════════════════════════════════════════
+        // 响铃状态放伴生对象：
+        // ActionBroadcastReceiver（通知栏按钮）在进程未拉起 UI 时也能收到
+        // 点击，需要在这里直接把铃声停掉。
+        // ═══════════════════════════════════════════════════════════════
+
+        @Volatile private var player: MediaPlayer? = null
+        @Volatile private var vibrator: Vibrator? = null
+
+        /** 停止响铃。任何地方（Activity / Dart / 通知按钮回调）都可安全调用 */
+        @JvmStatic fun ringStop() {
+            try { player?.stop(); player?.release() } catch (_: Exception) {}
+            player = null
+            try { vibrator?.cancel() } catch (_: Exception) {}
+            vibrator = null
+        }
+    }
+
+    private var pendingSpeech: MethodChannel.Result? = null
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "showSystemSpeechDialog" -> showSystemSpeechDialog(
+                        call.argument<String>("language") ?: "zh-CN",
+                        result,
+                    )
+                    "speechServices" -> result.success(listSpeechServices())
+                    "ringStart" -> { startRinging(this); result.success(true) }
+                    "ringStop" -> { ringStop(); result.success(true) }
+                    "isRinging" -> result.success(player != null)
+                    "keepScreenOn" -> {
+                        val on = call.argument<Boolean>("on") ?: false
+                        if (on) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                        result.success(true)
+                    }
+                    "isIgnoringBatteryOptimizations" ->
+                        result.success(isIgnoringBatteryOptimizations())
+                    "requestIgnoreBatteryOptimizations" ->
+                        requestIgnoreBatteryOptimizations(result)
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 1. 系统语音对话框
+    // ═══════════════════════════════════════════════════════════════
+
+    private fun showSystemSpeechDialog(language: String, result: MethodChannel.Result) {
+        // 一次只允许一个等待中的对话框请求
+        if (pendingSpeech != null) {
+            result.success(null)
+            return
+        }
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "请说出药品和服用方法")
+        }
+        // 没有任何语音引擎时 resolveActivity 为 null —— 直接告诉 Dart「没有服务」
+        if (intent.resolveActivity(packageManager) == null) {
+            result.error("no_engine", "no speech recognition service", null)
+            return
+        }
+        pendingSpeech = result
+        try {
+            startActivityForResult(intent, REQ_SPEECH)
+        } catch (e: Exception) {
+            pendingSpeech = null
+            result.error("start_failed", e.message, null)
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_SPEECH) return
+        val r = pendingSpeech
+        pendingSpeech = null
+        if (r == null) return
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            val text = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            r.success(text?.firstOrNull())
+        } else {
+            // 用户取消 / 引擎内部失败：返回 null，Dart 侧按「没拿到文字」处理
+            r.success(null)
+        }
+    }
+
+    /** 系统里有哪些语音识别服务（诊断页显示，帮用户确认设备到底有没有） */
+    private fun listSpeechServices(): List<String> {
+        val out = mutableListOf<String>()
+        try {
+            val pm = packageManager
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            val resolved = pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            for (info in resolved) {
+                out.add(info.loadLabel(pm)?.toString() ?: info.packageName)
+            }
+        } catch (_: Exception) {}
+        return out
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 2. 循环响铃（铃声 + 震动都循环，直到 ringStop）
+    // ═══════════════════════════════════════════════════════════════
+
+    private fun startRinging(context: Context) {
+        if (player != null) return // 已经在响，避免叠加
+        ringStop() // 先清干净旧实例
+
+        // 铃声：系统默认闹钟铃声；取不到就退到默认铃声
+        val uri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ?: return
+        try {
+            val p = MediaPlayer()
+            p.setDataSource(context, uri)
+            // 走「闹钟」音量流：用户媒体音量常调零，闹钟流独立可调
+            p.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            p.isLooping = true
+            p.prepare()
+            p.start()
+            player = p
+        } catch (_: Exception) {
+            player = null
+        }
+
+        // 震动：长-短-长循环（与通知渠道的节奏一致）
+        try {
+            val v = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager
+                vm.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // 0ms 停顿 → 800ms 震 → 400ms 停 → 800ms 震 → 400ms 停，循环
+                v.vibrate(VibrationEffect.createWaveform(
+                    longArrayOf(0, 800, 400, 800, 400, 800), 0))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(longArrayOf(0, 800, 400, 800, 400, 800), 0)
+            }
+            vibrator = v
+        } catch (_: Exception) {
+            vibrator = null
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 3. 电池优化白名单
+    // ═══════════════════════════════════════════════════════════════
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        return try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun requestIgnoreBatteryOptimizations(result: MethodChannel.Result) {
+        try {
+            if (isIgnoringBatteryOptimizations()) {
+                result.success(true)
+                return
+            }
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+            // 用户在系统对话框里的选择无法同步拿回（onActivityResult 对该
+            // action 不保证回调），返回 true 表示「已拉起」，最终状态由
+            // Dart 侧回来后重新查询 isIgnoringBatteryOptimizations。
+            result.success(true)
+        } catch (e: Exception) {
+            // 个别 ROM 禁掉了这个入口，退到电池优化设置列表页
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                result.success(true)
+            } catch (_: Exception) {
+                result.error("failed", e.message, null)
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 响铃页需要：锁屏上也直接亮出界面
+    // ═══════════════════════════════════════════════════════════════
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 冷启动直接来自通知点击时，锁屏状态也要能显示
+        // （showWhenLocked/turnScreenOn 需 API 27+；minSdk 23 的老设备由
+        //   fullScreenIntent 的系统全屏行为兜底）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+    }
+}
