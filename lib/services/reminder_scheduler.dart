@@ -136,7 +136,10 @@ class ReminderScheduler {
 
     // 关键：建档时就把「闹钟级」配置一次性给对，
     // 因为系统之后不会再允许修改。
-    await androidImpl?.createNotificationChannel(const AndroidNotificationChannel(
+    //
+    // 注意这里不能加 `const`：vibrationPattern 是 Int64List.fromList(...)，
+    // 运行期才构造，不是常量表达式（V1.4.0 首次构建就栽在这）。
+    await androidImpl?.createNotificationChannel(AndroidNotificationChannel(
       _channelId,
       _channelName,
       description: _channelDesc,
