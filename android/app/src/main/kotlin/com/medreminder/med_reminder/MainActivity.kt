@@ -155,9 +155,9 @@ class MainActivity : FlutterActivity() {
         /**
          * 启动后台守护服务。
          *
-         * 返回 true 表示「启动请求已发出」—— 注意服务是异步起来的，
-         * 这里查 running 会立刻拿到 false（V1.7.0 的日志因此误报
-         * 「启动失败或被系统拒绝」）。真实状态请用 isGuardRunning。
+         * 返回 true 表示「启动请求已发出」。服务是异步起来的，这里立刻
+         * 查 running 一定是 false —— V1.7.0 的日志因此误报「启动失败」。
+         * 真实状态请用 isGuardRunning。
          */
         @JvmStatic fun startGuard(context: Context): Boolean {
             return try {
@@ -172,6 +172,78 @@ class MainActivity : FlutterActivity() {
                 android.util.Log.e("MedReminder", "startGuard failed: $e")
                 false
             }
+        }
+
+        // ---- V1.8.0 新增：悬浮窗 / 后台拉界面 / 语音设置 ----
+
+        /** 是否已获得「显示在其他应用上层」权限（后台弹界面的前提） */
+        @JvmStatic fun canDrawOverlays(context: Context): Boolean {
+            return try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Settings.canDrawOverlays(context)
+                } else {
+                    true
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        /** 跳系统页申请悬浮窗权限 */
+        @JvmStatic fun requestOverlayPermission(context: Context) {
+            try {
+                context.startActivity(
+                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+            } catch (_: Exception) {
+                try {
+                    context.startActivity(
+                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                } catch (_: Exception) {}
+            }
+        }
+
+        /** 打开系统「语音输入」设置页（诊断到无服务时引导用户去启用） */
+        @JvmStatic fun openVoiceInputSettings(context: Context) {
+            val candidates = listOf(
+                Settings.ACTION_VOICE_INPUT_SETTINGS,
+                "com.android.settings.TTS_SETTINGS",
+                Settings.ACTION_SETTINGS,
+            )
+            for (action in candidates) {
+                try {
+                    context.startActivity(
+                        Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                    return
+                } catch (_: Exception) {}
+            }
+        }
+
+        /**
+         * 从后台直接拉起响铃页（GuardAlarmReceiver 调用）。
+         *
+         * 前提是有悬浮窗权限；没有时 startActivity 会被系统吞掉，
+         * 用户仍会收到通知（保底）。
+         */
+        @JvmStatic fun launchRinging(context: Context, payload: String) {
+            try {
+                pendingPayload = payload
+                val i = Intent(context, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                    )
+                    putExtra(EXTRA_PAYLOAD, payload)
+                }
+                context.startActivity(i)
+            } catch (_: Exception) {}
         }
 
         @JvmStatic fun stopGuard(context: Context) {
@@ -229,19 +301,15 @@ class MainActivity : FlutterActivity() {
                     "requestIgnoreBatteryOptimizations" ->
                         requestIgnoreBatteryOptimizations(result)
                     "startGuard" -> result.success(startGuard(this))
-                    "stopGuard" -> {
-                        stopGuard(this)
+                    "canDrawOverlays" -> result.success(canDrawOverlays(this))
+                    "requestOverlayPermission" -> {
+                        requestOverlayPermission(this)
                         result.success(true)
                     }
-                    "isGuardRunning" -> result.success(ReminderGuardService.running)
-                    "startNativeAsr" -> startNativeAsr(
-                        call.argument<String>("language") ?: "zh-CN",
-                        result,
-                    )
-                    "stopNativeAsr" -> { stopNativeAsr(); result.success(true) }
-                    "nativeAsrAvailable" -> result.success(
-                        try { SpeechRecognizer.isRecognitionAvailable(this) } catch (e: Exception) { false }
-                    )
+                    "openVoiceInputSettings" -> {
+                        openVoiceInputSettings(this)
+                        result.success(true)
+                    }
                     "setTestAlarm" -> {
                         val seconds = call.argument<Int>("seconds") ?: 10
                         val id = call.argument<Int>("id") ?: 990001
@@ -259,21 +327,25 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(true)
                     }
+                    "stopGuard" -> {
+                        stopGuard(this)
+                        result.success(true)
+                    }
+                    "isGuardRunning" -> result.success(ReminderGuardService.running)
+                    "startNativeAsr" -> startNativeAsr(
+                        call.argument<String>("language") ?: "zh-CN",
+                        result,
+                    )
+                    "stopNativeAsr" -> { stopNativeAsr(); result.success(true) }
+                    "nativeAsrAvailable" -> result.success(
+                        try { SpeechRecognizer.isRecognitionAvailable(this) } catch (e: Exception) { false }
+                    )
                     "setGuardSchedule" -> {
                         val json = call.argument<String>("json") ?: "[]"
                         GuardAlarm.setSchedule(this, json)
                         result.success(true)
                     }
                     "takePendingPayload" -> result.success(takePendingPayload())
-                    "canDrawOverlays" -> result.success(canDrawOverlays(this))
-                    "openVoiceInputSettings" -> {
-                        openVoiceInputSettings(this)
-                        result.success(true)
-                    }
-                    "requestOverlayPermission" -> {
-                        requestOverlayPermission(this)
-                        result.success(true)
-                    }
                     else -> result.notImplemented()
                 }
             }
@@ -393,13 +465,12 @@ class MainActivity : FlutterActivity() {
         // V1.8.0：不再用 resolveActivity 预判断
         // ═══════════════════════════════════════════════════════════
         //
-        // 用户日志显示「路径C 返回 | 无文字」且「系统语音服务=[]」——
-        // 原因是 Android 11+ 的包可见性：manifest 没声明
+        // 用户日志显示「路径C 返回 | 无文字」「系统语音服务=[]」——
+        // 根因是 Android 11+ 的包可见性：manifest 没声明
         // android.speech.action.RECOGNIZE_SPEECH 时，resolveActivity()
         // 一律返回 null，于是这里直接报 no_engine，对话框从未启动。
-        //
-        // 现在改成：直接尝试启动，只在真的抛 ActivityNotFoundException
-        // 时才认定「没有语音服务」。manifest 那边也补上了 queries 声明。
+        // 现在直接尝试启动，只在真的抛 ActivityNotFoundException 时才
+        // 认定「没有语音服务」；manifest 那边也补了 queries。
         pendingSpeech = result
         try {
             startActivityForResult(intent, REQ_SPEECH)
@@ -517,89 +588,6 @@ class MainActivity : FlutterActivity() {
         // 让 Dart 侧知道有新 payload 可取（Dart 收到后自行 push 响铃页）
         try {
             channel?.invokeMethod("ringingPayload", null)
-        } catch (_: Exception) {}
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // 5. 悬浮窗权限（后台直接弹响铃界面）
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * 是否已获得「显示在其他应用上层」权限。
-     *
-     * 这是后台弹界面的关键：持有时系统允许从后台 startActivity，
-     * 否则 Android 10+ 会静默拒绝，用户就只能看到一条通知。
-     */
-    @JvmStatic fun canDrawOverlays(context: Context): Boolean {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                Settings.canDrawOverlays(context)
-            } else {
-                true
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun requestOverlayPermission(context: Context) {
-        try {
-            val i = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
-                data = Uri.parse("package:${context.packageName}")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(i)
-        } catch (_: Exception) {
-            try {
-                context.startActivity(
-                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            } catch (_: Exception) {}
-        }
-    }
-
-    /**
-     * 打开系统的「语音输入」设置页。
-     *
-     * 用户这台机器上 RecognizerIntent 查不到处理者（日志里
-     * 「系统语音服务=[]」），需要在系统里启用/安装语音服务 ——
-     * 直接把他送到对应设置页，比让他在设置里翻半天强。
-     */
-    @JvmStatic fun openVoiceInputSettings(context: Context) {
-        val candidates = listOf(
-            Settings.ACTION_VOICE_INPUT_SETTINGS,
-            "com.android.settings.TTS_SETTINGS",
-            Settings.ACTION_SETTINGS,
-        )
-        for (action in candidates) {
-            try {
-                context.startActivity(
-                    Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-                return
-            } catch (_: Exception) {}
-        }
-    }
-
-    /**
-     * 从后台直接拉起响铃页（供 GuardAlarmReceiver 调用）。
-     *
-     * 前提是有悬浮窗权限；没有时 startActivity 会失败并被吞掉，
-     * 用户仍会看到通知（保底）。
-     */
-    @JvmStatic fun launchRinging(context: Context, payload: String) {
-        try {
-            pendingPayload = payload
-            val i = Intent(context, MainActivity::class.java).apply {
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP,
-                )
-                putExtra(EXTRA_PAYLOAD, payload)
-            }
-            context.startActivity(i)
         } catch (_: Exception) {}
     }
 
