@@ -23,6 +23,7 @@ enum MicGate { ok, denied, permanentlyDenied }
 /// 收音走的三条路径（日志里用来定位「到底哪条通了」）
 class VoicePath {
   VoicePath._();
+  static const String offline = 'O-离线模型';
   static const String native = 'B-原生识别器';
   static const String plugin = 'A-插件';
   static const String dialog = 'C-系统对话框';
@@ -141,7 +142,39 @@ class VoiceInputService {
       return false;
     }
 
-    // ---- 路径 B：原生识别器（优先，代码可控）----
+    // ═══════════════════════════════════════════════════════════════
+    // 路径 O：离线模型（V1.9.0 起的主路径）
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 用户设备的系统语音服务「注册了但不干活」，B/A/C 三条全靠系统，
+    // 日志已证实全废（error code=8 / 1.2 秒 done / 对话框 4 毫秒返回）。
+    //
+    // 因此：**只要 APK 里带了模型，就只走离线这一条**。
+    // 失败也不再往下试系统路径 —— 那只会让用户多等 11 秒再看到
+    // 同样的失败提示，体验更差。
+    final bool hasOffline = await NativeBridge.offlineAsrHasModel;
+    logx.voice('离线模型可用', '$hasOffline');
+
+    if (hasOffline) {
+      final String? o = await _tryOfflinePath(
+        onPartial: onPartial,
+        onFinal: onFinal,
+      );
+      if (o != null && o.trim().isNotEmpty) {
+        logx.voice('成功路径', VoicePath.offline);
+        onStopped?.call();
+        return true;
+      }
+      const String msg = '没有听清。靠近一点、说慢一点再试一次，'
+          '比如「氨氯地平一片，每天早八点」。';
+      onError(msg);
+      onFailure?.call(AsrFailure.heardNothing, msg);
+      onStopped?.call();
+      return false;
+    }
+
+    // 没有打包模型（理论上不会发生）→ 退回系统路径
+    // ---- 路径 B：原生识别器（代码可控）----
     final String? b = await _tryNativePath(onPartial: onPartial, onFinal: onFinal);
     if (b != null && b.trim().isNotEmpty) {
       logx.voice('成功路径', VoicePath.native);
@@ -177,6 +210,81 @@ class VoiceInputService {
     return false;
   }
 
+  // ------------------------------------------------------------ 路径 O
+
+  /// 离线识别（Vosk，模型随 APK 下发）
+  ///
+  /// 首次调用要解压模型（约 70MB，3–5 秒）+ 加载（2–3 秒），
+  /// 所以超时给到 12 秒；之后每次约 5–8 秒（说话 + 静音判定）。
+  Future<String?> _tryOfflinePath({
+    required void Function(String partialText) onPartial,
+    required void Function(String finalText) onFinal,
+  }) async {
+    final AppLog logx = AppLog.instance;
+    if (!Platform.isAndroid) return null;
+
+    if (!await NativeBridge.offlineAsrHasModel) {
+      logx.voice('路径O 跳过', 'APK 内没有离线模型');
+      return null;
+    }
+
+    final Completer<String?> done = Completer<String?>();
+    String buf = '';
+    StreamSubscription<NativeAsrEvent>? sub;
+    Timer? timeout;
+
+    void finish(String? v) {
+      if (!done.isCompleted) done.complete(v);
+    }
+
+    NativeBridge.bindAsrHandler();
+    sub = NativeBridge.asrEvents.listen((NativeAsrEvent e) {
+      if (!e.type.startsWith('offline_')) return;
+      final String kind = e.type.substring('offline_'.length);
+      if (kind == 'partial') {
+        logx.voice('路径O 部分结果', e.text);
+        onPartial(e.text);
+      } else if (kind == 'result') {
+        logx.voice('路径O 最终结果', e.text);
+        buf = e.text;
+        if (e.text.trim().isNotEmpty) onFinal(e.text.trim());
+        finish(buf);
+      } else if (kind == 'ready') {
+        logx.voice('路径O 模型就绪');
+        // 关键：模型没准备好之前说的话是收不到的，必须明确告诉用户
+        // 「现在可以说了」—— 否则他会以为 App 又没反应
+        onPartial('请说话…');
+      } else if (kind == 'error') {
+        logx.voice('路径O 错误', '${e.text} code=${e.code}');
+        finish(buf.trim().isEmpty ? null : buf);
+      } else if (kind == 'end') {
+        logx.voice('路径O 会话结束', '累计 ${buf.trim().length} 字');
+        finish(buf.trim().isEmpty ? null : buf);
+      }
+    });
+
+    final bool started = await NativeBridge.startOfflineAsr();
+    if (!started) {
+      logx.voice('路径O 启动失败');
+      await sub.cancel();
+      return null;
+    }
+    logx.voice('路径O 已开始（首次需解压模型，可能较慢）');
+    // 首次要解压 + 加载模型，先给一句提示，别让用户对着手机干等
+    onPartial('正在准备语音模型…');
+
+    timeout = Timer(const Duration(seconds: 12), () {
+      logx.voice('路径O 超时', '12 秒');
+      finish(buf.trim().isEmpty ? null : buf);
+    });
+
+    final String? r = await done.future;
+    timeout.cancel();
+    await sub.cancel();
+    await NativeBridge.stopOfflineAsr();
+    return r;
+  }
+
   // ------------------------------------------------------------ 路径 B
 
   /// 原生识别器：MainActivity 的 SpeechRecognizer，事件经 MethodChannel 回传
@@ -208,6 +316,8 @@ class VoiceInputService {
 
     NativeBridge.bindAsrHandler();
     sub = NativeBridge.asrEvents.listen((NativeAsrEvent e) {
+      // 离线路径的事件也走同一个通道，这里必须过滤掉
+      if (e.type.startsWith('offline_')) return;
       if (e.isResult || e.isError || e.isEnd || e.text.isNotEmpty) {
         logx.voice('路径B 事件', '${e.type} "${e.text}" code=${e.code}');
       }
@@ -332,9 +442,14 @@ class VoiceInputService {
 
   // ------------------------------------------------------------ 其它
 
-  Future<void> stop() => _engine.stop();
+  Future<void> stop() async {
+    // 「说完了」按钮：离线识别要能立刻收尾并返回已有文字
+    await NativeBridge.stopOfflineAsr();
+    await _engine.stop();
+  }
 
   Future<void> cancel() async {
+    await NativeBridge.stopOfflineAsr();
     await NativeBridge.stopNativeAsr();
     await _engine.cancel();
   }

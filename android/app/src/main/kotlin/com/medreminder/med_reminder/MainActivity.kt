@@ -337,6 +337,27 @@ class MainActivity : FlutterActivity() {
                         result,
                     )
                     "stopNativeAsr" -> { stopNativeAsr(); result.success(true) }
+                    // ---- 离线识别（Vosk，自带模型）----
+                    "offlineAsrHasModel" -> result.success(OfflineAsr.hasModel(this))
+                    "offlineAsrPrepared" -> result.success(OfflineAsr.isRunning())
+                    "startOfflineAsr" -> {
+                        if (OfflineAsr.isRunning()) {
+                            result.success(false)
+                        } else {
+                            // 模型首次要解压+加载（3–5 秒），放后台线程；
+                            // 这里立刻返回 true，进度与结果通过 asrEvent 推送
+                            Thread {
+                                OfflineAsr.start(this) { type, text, code ->
+                                    emitAsr("offline_$type", text, code)
+                                }
+                            }.start()
+                            result.success(true)
+                        }
+                    }
+                    "stopOfflineAsr" -> {
+                        OfflineAsr.stop()
+                        result.success(true)
+                    }
                     "nativeAsrAvailable" -> result.success(
                         try { SpeechRecognizer.isRecognitionAvailable(this) } catch (e: Exception) { false }
                     )

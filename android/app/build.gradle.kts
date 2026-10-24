@@ -42,6 +42,12 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         multiDexEnabled = true
+
+        // V1.9.0：离线语音识别（Vosk）自带多 ABI 的 .so。
+        // 只保留真机在用的两种，去掉 x86/x86_64，省约 10MB。
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     signingConfigs {
@@ -89,6 +95,18 @@ kotlin {
 dependencies {
     // 脱糖库：让 minSdk 23 也能用 java.time
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+
+    // V1.9.0：离线语音识别。
+    //
+    // 为什么用它：用户设备的系统语音服务「注册了但不干活」（日志显示
+    // error code=8 / 1.2 秒即 done / 系统对话框 4 毫秒返回），三条
+    // 系统路径全废。Vosk 把识别模型直接打包进 APK，完全离线、
+    // 不依赖任何系统语音组件，也不联网。
+    //
+    // 用 `+` 而非固定版本：本地无法访问 Maven Central 核对发布号，
+    // 动态版本由 CI 的 Gradle 解析（会取 0.3.x 最新稳定版），
+    // 避免写死一个不存在的版本导致构建失败。
+    implementation("com.alphacephei:vosk-android:+")
 }
 
 flutter {

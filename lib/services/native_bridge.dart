@@ -127,6 +127,44 @@ class NativeBridge {
     } catch (_) {}
   }
 
+  // ------------------------------------------------ 离线识别（Vosk）
+
+  /// APK 里是否带了离线中文模型。
+  ///
+  /// V1.9.0 起，语音识别不再依赖系统服务：模型随 APK 一起下发，
+  /// 首次使用时解压到应用目录，之后完全离线识别。
+  static Future<bool> get offlineAsrHasModel async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('offlineAsrHasModel') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 启动离线识别。
+  ///
+  /// 立即返回 true 表示任务已下发；真正的进度与结果通过 [asrEvents]
+  /// 推送，type 以 `offline_` 开头（offline_ready / offline_partial /
+  /// offline_result / offline_error / offline_end）。
+  /// 首次启动会解压模型，可能等 3–5 秒才收到 offline_ready。
+  static Future<bool> startOfflineAsr() async {
+    if (!supported) return false;
+    bindAsrHandler();
+    try {
+      return await _ch.invokeMethod<bool>('startOfflineAsr') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> stopOfflineAsr() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('stopOfflineAsr');
+    } catch (_) {}
+  }
+
   // ------------------------------------------------ 系统语音对话框
 
   /// 弹系统「语音输入」对话框，返回识别出的文字；取消/失败返回 null

@@ -37,3 +37,6 @@ logx/
 # ---- 构建产物：只留本地，不进仓库 ----
 dist/*.apk
 dist/*.zip
+
+# 离线语音模型：构建时由 CI 下载到 assets，绝不进仓库（32MB）
+android/app/src/main/assets/vosk-model-zh.zip
