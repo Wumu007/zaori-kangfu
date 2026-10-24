@@ -136,8 +136,11 @@ class AppLog {
     final DateTime d = DateTime.now();
     final Duration elapsed = _clock.elapsed;
     String two(int v) => v.toString().padLeft(2, '0');
-    final String ms =
-        elapsed.inMilliseconds.remainder(1000).toString().padLeft(3, '0');
+    // V1.10.0：毫秒必须和「时分秒」取同一个时钟。
+    // 之前取的是 Stopwatch 的毫秒，与 DateTime 的秒不对应，
+    // 日志里会出现「同一秒内后写的行毫秒更小」的乱序（例如
+    // 22:47:07.701 后面跟着 22:47:07.113），排查时非常误导。
+    final String ms = d.millisecond.toString().padLeft(3, '0');
     return '${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}:'
         '${two(d.second)}.$ms +${elapsed.inSeconds}s ';
   }

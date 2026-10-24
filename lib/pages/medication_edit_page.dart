@@ -93,6 +93,12 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   /// 直接把用户导向键盘输入，而不是让他反复对着手机说话。
   bool _voiceFatal = false;
 
+  /// 语音过程中的状态提示（准备模型 / 请说话 / 正在听）
+  ///
+  /// 单独一个字段而不是复用 _partial：状态是「过程说明」，
+  /// 混进识别文字会被当成结果填进表单（V1.9.0 就踩过这个坑）。
+  String _voiceStatus = '';
+
   /// 此刻屏幕上应该显示的识别内容 = 已确认部分 + 正在说的部分
   String get _liveText => _finalBuf + _partial;
 
@@ -180,6 +186,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
       _showResult = false;
       _voiceError = '';
       _micBlocked = false;
+      _voiceStatus = '正在准备语音模型…';
     });
 
     // 麦克风权限在第一次点语音时才申请（不在启动时打扰）
@@ -196,11 +203,18 @@ class _MedicationEditPageState extends State<MedicationEditPage>
           _partial = '';
         });
       },
+      // 过程状态（准备模型 / 请说话 / 正在听）：只更新提示行，
+      // 不进入识别文字，避免「正在准备」被当成药名填进表单
+      onStatus: (String status) {
+        if (!mounted) return;
+        setState(() => _voiceStatus = status);
+      },
       onError: (String msg) {
         if (!mounted) return;
         setState(() {
           _listening = false;
           _voiceError = msg;
+          _voiceStatus = '';
         });
       },
       // V1.4.0：按失败类型决定要不要给「去装语音服务」的出口。
@@ -210,6 +224,9 @@ class _MedicationEditPageState extends State<MedicationEditPage>
         setState(() {
           _listening = false;
           _voiceError = msg;
+          _voiceStatus = '';
+          // V1.10.0：离线引擎不可用也归到「致命」——重试只会让老人
+          // 反复对着手机说话。卡上有「再试一次」按钮，需要时可手动重来。
           _voiceFatal = kind == AsrFailure.noEngine;
         });
       },
@@ -224,7 +241,10 @@ class _MedicationEditPageState extends State<MedicationEditPage>
       // V1.2「一直显示正在听」就是因为会话死了 UI 不知道。
       onStopped: () {
         if (!mounted || !_listening) return;
-        setState(() => _listening = false);
+        setState(() {
+          _listening = false;
+          _voiceStatus = '';
+        });
         final String text = _liveText.trim();
         if (text.isEmpty) {
           setState(() {
@@ -785,24 +805,26 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                   size: 34,
                 ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      Text(
-                        '这台手机没找到语音识别服务',
+                      const Text(
+                        '语音暂时用不了',
                         style: TextStyle(
                           fontSize: AppText.bodySm,
                           fontWeight: FontWeight.w600,
                           color: AppColors.ink,
                         ),
                       ),
-                      SizedBox(height: 3),
+                      const SizedBox(height: 3),
+                      // 具体原因由编排层给出（模型解压失败 / 麦克风被占 /
+                      // 引擎没起来），比笼统的「用不了」有用得多
                       Text(
-                        '系统自带的语音服务没有响应（诊断日志里「系统语音服务」为空）。'
-                        '可以在手机设置里启用语音输入，或装一个语音服务再回来试。'
-                        '下面的表单填写一样快。',
-                        style: TextStyle(
+                        _voiceError.isEmpty
+                            ? '语音引擎没有启动成功。下面的表单填写一样快。'
+                            : '$_voiceError\n用下面的表单填写一样快。',
+                        style: const TextStyle(
                           fontSize: AppText.tiny,
                           height: 1.5,
                           color: AppColors.muted,
@@ -933,8 +955,12 @@ class _MedicationEditPageState extends State<MedicationEditPage>
               const Icon(Icons.graphic_eq_rounded, size: 18, color: AppColors.primary),
               const SizedBox(width: 6),
               // 实时转写：有字了提示「边说边出字」，没字提示「正在听」
+              // 状态优先：模型还在解压时显示「正在准备语音模型…」，
+              // 就绪后显示「请说话…」，有字后显示「正在听，边说边出字」
               Text(
-                _liveText.isEmpty ? '正在听，请说话…' : '正在听，边说边出字',
+                _voiceStatus.isNotEmpty
+                    ? _voiceStatus
+                    : (_liveText.isEmpty ? '正在听，请说话…' : '正在听，边说边出字'),
                 style: const TextStyle(
                   fontSize: AppText.caption,
                   fontWeight: FontWeight.w600,

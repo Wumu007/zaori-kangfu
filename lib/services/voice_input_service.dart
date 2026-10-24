@@ -29,6 +29,19 @@ class VoicePath {
   static const String dialog = 'C-系统对话框';
 }
 
+/// 离线路径的结果
+///
+/// 为什么不用 `String?`：需要区分两种「没拿到文字」——
+/// - `text` 为空 + `failure` 为空 = 用户没说话 / 没听清 → 提示重说；
+/// - `failure` 非空 = 引擎本身不可用（模型解压失败、麦克风被占）→
+///   必须说清原因，否则用户会一直对着手机重复说话。
+class _OfflineOutcome {
+  const _OfflineOutcome({this.text, this.failure});
+
+  final String? text;
+  final String? failure;
+}
+
 /// 语音录入的编排层：**听 → 解析 → 回读**
 ///
 /// ═══════════════════════════════════════════════════════════════════
@@ -122,6 +135,9 @@ class VoiceInputService {
     required void Function(String partialText) onPartial,
     required void Function(String finalText) onFinal,
     required void Function(String readableError) onError,
+    /// 过程状态（「正在准备模型」「请说话」），与识别文字分开，
+    /// 免得这些提示被当成识别结果填进输入框
+    void Function(String status)? onStatus,
     void Function(MicGate gate)? onMicBlocked,
     void Function()? onStopped,
     void Function(AsrFailure kind, String readableError)? onFailure,
@@ -156,15 +172,29 @@ class VoiceInputService {
     logx.voice('离线模型可用', '$hasOffline');
 
     if (hasOffline) {
-      final String? o = await _tryOfflinePath(
+      final _OfflineOutcome o = await _tryOfflinePath(
         onPartial: onPartial,
         onFinal: onFinal,
+        onStatus: onStatus,
       );
-      if (o != null && o.trim().isNotEmpty) {
+      if (o.text != null && o.text!.trim().isNotEmpty) {
         logx.voice('成功路径', VoicePath.offline);
         onStopped?.call();
         return true;
       }
+
+      // 引擎层问题（模型没准备好 / 麦克风被占）：给准确原因，
+      // 不要用「没听清」——那会让用户反复对着手机重复同一句话。
+      final String? f = o.failure;
+      if (f != null) {
+        const String head = '语音没准备好';
+        final String msg = '$head：$f';
+        onError(msg);
+        onFailure?.call(AsrFailure.noEngine, msg);
+        onStopped?.call();
+        return false;
+      }
+
       const String msg = '没有听清。靠近一点、说慢一点再试一次，'
           '比如「氨氯地平一片，每天早八点」。';
       onError(msg);
@@ -214,72 +244,116 @@ class VoiceInputService {
 
   /// 离线识别（Vosk，模型随 APK 下发）
   ///
-  /// 首次调用要解压模型（约 70MB，3–5 秒）+ 加载（2–3 秒），
-  /// 所以超时给到 12 秒；之后每次约 5–8 秒（说话 + 静音判定）。
-  Future<String?> _tryOfflinePath({
+  /// 交互按「准备 → 说话 → 停顿自动收尾」三段设计：
+  /// - 准备阶段的状态走 [onStatus]，不写进输入框；
+  /// - 说完全自动（停顿 3 秒）收尾，不用等超时；
+  /// - 15 秒还没动静就兜底结束，避免一直占着麦克风。
+  Future<_OfflineOutcome> _tryOfflinePath({
     required void Function(String partialText) onPartial,
     required void Function(String finalText) onFinal,
+    void Function(String status)? onStatus,
   }) async {
     final AppLog logx = AppLog.instance;
-    if (!Platform.isAndroid) return null;
+    if (!Platform.isAndroid) {
+      return const _OfflineOutcome(failure: '仅支持 Android');
+    }
 
     if (!await NativeBridge.offlineAsrHasModel) {
       logx.voice('路径O 跳过', 'APK 内没有离线模型');
-      return null;
+      return const _OfflineOutcome();
     }
 
-    final Completer<String?> done = Completer<String?>();
-    String buf = '';
+    final Completer<_OfflineOutcome> done = Completer<_OfflineOutcome>();
+    String text = '';
+    String? failure;
+    bool ready = false;
     StreamSubscription<NativeAsrEvent>? sub;
     Timer? timeout;
+    Timer? silence;
 
     void finish(String? v) {
-      if (!done.isCompleted) done.complete(v);
+      if (!done.isCompleted) {
+        done.complete(_OfflineOutcome(
+          text: (v == null || v.trim().isEmpty) ? null : v,
+          failure: failure,
+        ));
+      }
+    }
+
+    // 说完停顿 3 秒就收尾：老人说完一句会停一下，
+    // 这比让界面干等 15 秒友好得多；3 秒也够留出换气的间隙
+    void armSilence() {
+      silence?.cancel();
+      silence = Timer(const Duration(milliseconds: 3000), () {
+        if (text.trim().isEmpty) return;
+        logx.voice('路径O 停顿收尾', text.trim());
+        finish(text);
+        unawaited(NativeBridge.stopOfflineAsr());
+      });
     }
 
     NativeBridge.bindAsrHandler();
     sub = NativeBridge.asrEvents.listen((NativeAsrEvent e) {
       if (!e.type.startsWith('offline_')) return;
       final String kind = e.type.substring('offline_'.length);
-      if (kind == 'partial') {
-        logx.voice('路径O 部分结果', e.text);
-        onPartial(e.text);
-      } else if (kind == 'result') {
-        logx.voice('路径O 最终结果', e.text);
-        buf = e.text;
-        if (e.text.trim().isNotEmpty) onFinal(e.text.trim());
-        finish(buf);
-      } else if (kind == 'ready') {
-        logx.voice('路径O 模型就绪');
-        // 关键：模型没准备好之前说的话是收不到的，必须明确告诉用户
-        // 「现在可以说了」—— 否则他会以为 App 又没反应
-        onPartial('请说话…');
-      } else if (kind == 'error') {
-        logx.voice('路径O 错误', '${e.text} code=${e.code}');
-        finish(buf.trim().isEmpty ? null : buf);
-      } else if (kind == 'end') {
-        logx.voice('路径O 会话结束', '累计 ${buf.trim().length} 字');
-        finish(buf.trim().isEmpty ? null : buf);
+      switch (kind) {
+        case 'detail':
+          // 原生把「复用已解压模型 / 解压 12 个文件 70MB / 加载失败原因」
+          // 都写在这一条里，出问题一眼能看出来
+          logx.voice('路径O 准备', e.text);
+          break;
+        case 'progress':
+          logx.voice('路径O 进度', e.text);
+          onStatus?.call(e.text);
+          break;
+        case 'ready':
+          ready = true;
+          logx.voice('路径O 模型就绪', '可以说话了');
+          onStatus?.call('请说话…');
+          break;
+        case 'partial':
+          if (e.text.trim().isEmpty) break;
+          text = e.text;
+          onStatus?.call('正在听…');
+          onPartial(e.text);
+          armSilence();
+          break;
+        case 'result':
+          logx.voice('路径O 最终结果', e.text);
+          text = e.text;
+          if (e.text.trim().isNotEmpty) onFinal(e.text.trim());
+          finish(text);
+          break;
+        case 'error':
+          failure = e.text.isEmpty ? '识别引擎报错' : e.text;
+          logx.voice('路径O 错误', '${e.text} code=${e.code}');
+          finish(text);
+          break;
+        case 'end':
+          logx.voice('路径O 会话结束', '累计 ${text.trim().length} 字');
+          finish(text);
+          break;
       }
     });
 
     final bool started = await NativeBridge.startOfflineAsr();
     if (!started) {
-      logx.voice('路径O 启动失败');
+      logx.voice('路径O 启动失败', '原生拒绝启动');
       await sub.cancel();
-      return null;
+      // 原生会推一条 offline_error 说明原因；这里只兜底
+      return _OfflineOutcome(failure: failure ?? '语音引擎没能启动');
     }
-    logx.voice('路径O 已开始（首次需解压模型，可能较慢）');
-    // 首次要解压 + 加载模型，先给一句提示，别让用户对着手机干等
-    onPartial('正在准备语音模型…');
+    onStatus?.call('正在准备语音模型…');
 
-    timeout = Timer(const Duration(seconds: 12), () {
-      logx.voice('路径O 超时', '12 秒');
-      finish(buf.trim().isEmpty ? null : buf);
+    timeout = Timer(const Duration(seconds: 15), () {
+      logx.voice('路径O 超时', ready ? '已就绪但没听到内容' : '15 秒仍在准备');
+      if (!ready) failure = '模型准备超时（首次需解压，请再试一次）';
+      finish(text);
     });
 
-    final String? r = await done.future;
+    final _OfflineOutcome r = await done.future;
     timeout.cancel();
+    silence?.cancel();
     await sub.cancel();
     await NativeBridge.stopOfflineAsr();
     return r;

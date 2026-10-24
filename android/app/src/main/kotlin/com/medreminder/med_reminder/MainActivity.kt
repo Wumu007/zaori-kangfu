@@ -341,10 +341,13 @@ class MainActivity : FlutterActivity() {
                     "offlineAsrHasModel" -> result.success(OfflineAsr.hasModel(this))
                     "offlineAsrPrepared" -> result.success(OfflineAsr.isRunning())
                     "startOfflineAsr" -> {
-                        if (OfflineAsr.isRunning()) {
+                        if (OfflineAsr.isRunning() || OfflineAsr.isPreparing()) {
+                            // V1.10.0：上次还没收尾时不要静默返回 false ——
+                            // 那会让 Dart 一直等到超时。这里主动回一条事件。
+                            emitAsr("offline_error", "上一次语音还没结束", 6)
                             result.success(false)
                         } else {
-                            // 模型首次要解压+加载（3–5 秒），放后台线程；
+                            // 模型首次要解压+加载（2–6 秒），放后台线程；
                             // 这里立刻返回 true，进度与结果通过 asrEvent 推送
                             Thread {
                                 OfflineAsr.start(this) { type, text, code ->

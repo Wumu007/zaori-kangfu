@@ -121,7 +121,7 @@ jobs:
 
       - name: 编译 Release APK
         run: |
-          flutter build apk --release --build-name=1.9.0 --build-number=${GITHUB_RUN_NUMBER}
+          flutter build apk --release --build-name=1.10.0 --build-number=${GITHUB_RUN_NUMBER}
           echo "--- 产物 ---"
           ls -lh build/app/outputs/flutter-apk/
 
