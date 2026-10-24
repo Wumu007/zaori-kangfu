@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../services/medication_repository.dart';
+import '../services/native_bridge.dart';
 import '../services/reminder_scheduler.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -60,8 +61,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   Future<void> _resyncSilently() async {
     try {
+      // 1) 回前台补排一次（ROM 可能已把排期清掉）
       await ReminderScheduler.instance.scheduleAll(
           await MedicationRepository.instance.activeMedications());
+      // 2) 守护服务被系统停掉的话，回前台时补启动
+      //    （Android 12+ 不允许后台启动前台服务，只能在这里补）
+      await NativeBridge.startGuard();
       await AppState.instance.refresh();
     } catch (_) {
       // 对齐失败不打扰用户，冷启动时还有一次机会

@@ -14,7 +14,9 @@ import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.Settings
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -61,14 +63,45 @@ class MainActivity : FlutterActivity() {
             try { vibrator?.cancel() } catch (_: Exception) {}
             vibrator = null
         }
+
+        /**
+         * 启动后台守护前台服务。
+         *
+         * 只能在 App 处于前台时调用（Android 12+ 不允许后台启动前台服务），
+         * 所以调用点是 main.dart 启动流程与页面回前台时。
+         */
+        @JvmStatic fun startGuard(context: Context) {
+            try {
+                val i = Intent(context, ReminderGuardService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(i)
+                } else {
+                    context.startService(i)
+                }
+            } catch (_: Exception) {
+                // 系统限制（如后台启动）时静默失败，不影响主流程
+            }
+        }
+
+        @JvmStatic fun stopGuard(context: Context) {
+            try {
+                context.stopService(Intent(context, ReminderGuardService::class.java))
+            } catch (_: Exception) {}
+        }
     }
 
     private var pendingSpeech: MethodChannel.Result? = null
 
+    /** 原生语音识别器（第三条路径：插件 → 原生识别器 → 系统对话框） */
+    private var nativeAsr: SpeechRecognizer? = null
+
+    /** 保存 channel，用于把识别结果主动推回 Dart */
+    private var channel: MethodChannel? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-            .setMethodCallHandler { call, result ->
+        channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        channel!!.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "showSystemSpeechDialog" -> showSystemSpeechDialog(
                         call.argument<String>("language") ?: "zh-CN",
@@ -91,9 +124,118 @@ class MainActivity : FlutterActivity() {
                         result.success(isIgnoringBatteryOptimizations())
                     "requestIgnoreBatteryOptimizations" ->
                         requestIgnoreBatteryOptimizations(result)
+                    "startGuard" -> {
+                        startGuard(this)
+                        result.success(ReminderGuardService.running)
+                    }
+                    "stopGuard" -> {
+                        stopGuard(this)
+                        result.success(true)
+                    }
+                    "isGuardRunning" -> result.success(ReminderGuardService.running)
+                    "startNativeAsr" -> startNativeAsr(
+                        call.argument<String>("language") ?: "zh-CN",
+                        result,
+                    )
+                    "stopNativeAsr" -> { stopNativeAsr(); result.success(true) }
+                    "nativeAsrAvailable" -> result.success(
+                        try { SpeechRecognizer.isRecognitionAvailable(this) } catch (e: Exception) { false }
+                    )
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 0. 原生语音识别器（静默识别，不弹对话框）
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // speech_to_text 插件走的是 createSpeechRecognizer(pluginContext)
+    // + 它自己的回调封装，在 iQOO 上连续三版都不工作。这里用官方
+    // SpeechRecognizer API 自己实现一遍，绕开插件封装。
+    // 结果通过 MethodChannel 的 "asrEvent" 主动回传 Dart：
+    //   {type: ready|speaking|partial|result|error|end, text, code}
+
+    private fun startNativeAsr(language: String, result: MethodChannel.Result) {
+        try {
+            if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                result.error("no_engine", "no speech recognition service", null)
+                return
+            }
+            stopNativeAsr()
+            val rec = SpeechRecognizer.createSpeechRecognizer(this)
+            rec.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) = emitAsr("ready", "")
+                override fun onBeginningOfSpeech() = emitAsr("speaking", "")
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() = emitAsr("endOfSpeech", "")
+
+                override fun onError(error: Int) {
+                    emitAsr("error", "", error)
+                }
+
+                override fun onResults(results: Bundle?) {
+                    val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    emitAsr("result", list?.firstOrNull() ?: "")
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val list = partialResults?.getStringArrayList(
+                        SpeechRecognizer.RESULTS_RECOGNITION
+                    )
+                    val text = list?.firstOrNull() ?: ""
+                    if (text.isNotEmpty()) emitAsr("partial", text)
+                }
+
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                )
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+                // 老人说话慢，给足静音等待时间（3 秒才判定说完了）
+                putExtra(
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                    3000L,
+                )
+                putExtra(
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                    3000L,
+                )
+            }
+            nativeAsr = rec
+            rec.startListening(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            nativeAsr = null
+            result.error("start_failed", e.message, null)
+        }
+    }
+
+    private fun stopNativeAsr() {
+        try { nativeAsr?.stopListening() } catch (_: Exception) {}
+        try { nativeAsr?.cancel() } catch (_: Exception) {}
+        try { nativeAsr?.destroy() } catch (_: Exception) {}
+        nativeAsr = null
+    }
+
+    /** 把识别事件推给 Dart */
+    private fun emitAsr(type: String, text: String, code: Int = 0) {
+        runOnUiThread {
+            try {
+                channel?.invokeMethod(
+                    "asrEvent",
+                    mapOf("type" to type, "text" to text, "code" to code),
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════

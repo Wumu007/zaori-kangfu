@@ -8,6 +8,7 @@ import 'package:timezone/timezone.dart' as tz;
 
 import '../models/day_slot.dart';
 import '../models/medication.dart';
+import 'app_log.dart';
 import 'app_settings.dart';
 
 /// 通知点击动作
@@ -260,6 +261,48 @@ class ReminderScheduler {
     await android?.requestExactAlarmsPermission();
   }
 
+  /// 排一条 10 秒后的测试提醒（设置页「测试提醒」按钮）
+  ///
+  /// ═══════════════════════════════════════════════════════════════
+  /// 为什么必须有这个按钮
+  /// ═══════════════════════════════════════════════════════════════
+  /// 「后台到底响不响」在此之前只能靠等真正的吃药时间验证 ——
+  /// 用户反馈「没响」时，我们分不清是排程失败、权限没给、还是 ROM
+  /// 冻结。做成一键测试后，用户当场锁屏就能确认，且这条也走完整
+  /// 的 alarmClock + fullScreenIntent + 响铃页链路，测的就是真实路径。
+  ///
+  /// payload 带 test 标记：点「已服药」不会往数据库写脏记录。
+  Future<bool> testReminder({int seconds = 10}) async {
+    final DateTime when = DateTime.now().add(Duration(seconds: seconds));
+    final tz.TZDateTime tzw = tz.TZDateTime.from(when, tz.local);
+    const String body = '这是一条测试提醒。看到它并听到铃声，说明提醒功能正常。';
+    try {
+      await _plugin.zonedSchedule(
+        990001,
+        '测试提醒',
+        body,
+        tzw,
+        _detailsRaw(title: '测试提醒', body: body, snoozeMinutes: 10),
+        androidScheduleMode: AndroidScheduleMode.alarmClock,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        payload: jsonEncode(<String, Object?>{
+          'med': '__test__',
+          'at': when.toIso8601String(),
+          'name': '测试提醒',
+          'body': body,
+          'ring': '1',
+          'test': '1',
+        }),
+      );
+      AppLog.instance.notify('测试提醒已排', '$seconds 秒后');
+      return true;
+    } catch (e) {
+      AppLog.instance.error('测试提醒排程失败', e);
+      return false;
+    }
+  }
+
   /// 冷启动信息：App 是否由点通知拉起、那条通知的 payload/actionId
   ///
   /// 只在 init() 之后调用有效。用于「锁屏时点了到点提醒 → 冷启动直接
@@ -328,10 +371,16 @@ class ReminderScheduler {
   }
 
   /// 只排不取消 —— App 冷启动时用，保证已排的通知不丢
+  ///
+  /// 会记录一条汇总日志：成功/失败条数与药品数。
+  /// 「后台不响」的第一排查点就是这里 —— 如果失败条数不为 0，
+  /// 说明不是 ROM 冻结，而是排程本身就没成功（多半是权限或渠道问题）。
   Future<void> scheduleAll(List<Medication> meds) async {
     final DateTime now = DateTime.now();
     final DateTime today = DateTime(now.year, now.month, now.day);
 
+    int ok = 0;
+    int fail = 0;
     for (final Medication med in meds) {
       if (!med.enabled) continue;
 
@@ -344,13 +393,22 @@ class ReminderScheduler {
           // 今天已经过点的不补排：补排会立刻弹一条「该吃药了」，
           // 用户会以为 App 出了错
           if (!when.isAfter(now)) continue;
-          await _schedule(med, when);
+          final bool success = await _schedule(med, when);
+          if (success) {
+            ok++;
+          } else {
+            fail++;
+          }
         }
       }
     }
+    AppLog.instance.notify(
+      '排程汇总',
+      '成功 $ok 条 / 失败 $fail 条 / 在提醒 ${meds.where((m) => m.enabled).length} 种药',
+    );
   }
 
-  Future<void> _schedule(Medication med, DateTime when) async {
+  Future<bool> _schedule(Medication med, DateTime when) async {
     final tz.TZDateTime tzw = tz.TZDateTime.from(when, tz.local);
     try {
       await _plugin.zonedSchedule(
@@ -380,12 +438,14 @@ class ReminderScheduler {
             UILocalNotificationDateInterpretation.absoluteTime,
         payload: _payload(med, when),
       );
+      return true;
     } on PlatformException catch (e) {
       // 精确闹钟权限被用户拒绝时插件会抛 exact_alarms_not_permitted。
       // 此时**不能放弃排期**：退到 inexactAllowWhileIdle，
       // 时间可能偏几分钟，但至少还会响 —— 比彻底不响好得多。
       if (e.code == 'exact_alarms_not_permitted') {
         _exactAlarmBlocked = true;
+        AppLog.instance.notify('精确闹钟被拒', '降级为不精确排程');
         try {
           await _plugin.zonedSchedule(
             _idOf(med.id, when),
@@ -398,12 +458,18 @@ class ReminderScheduler {
                 UILocalNotificationDateInterpretation.absoluteTime,
             payload: _payload(med, when),
           );
+          return true;
         } catch (_) {
           // 连不精确排期都失败，只能放弃这一条
+          return false;
         }
       }
-    } catch (_) {
+      AppLog.instance.error('排程失败', e);
+      return false;
+    } catch (e) {
       // 其他异常（时区、参数）不应打断整批排期
+      AppLog.instance.error('排程异常', e);
+      return false;
     }
   }
 

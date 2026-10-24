@@ -1,35 +1,119 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+/// 原生语音识别器抛给 Dart 的一个事件
+class NativeAsrEvent {
+  const NativeAsrEvent({
+    required this.type,
+    required this.text,
+    required this.code,
+  });
+
+  /// ready / speaking / partial / result / error / endOfSpeech
+  final String type;
+  final String text;
+
+  /// Android SpeechRecognizer 的错误码（type == 'error' 时有意义）
+  final int code;
+
+  bool get isResult => type == 'result';
+  bool get isPartial => type == 'partial';
+  bool get isError => type == 'error';
+  bool get isEnd => type == 'endOfSpeech';
+}
+
 /// 原生侧能力桥：MethodChannel `med_reminder/native`
 ///
 /// ═══════════════════════════════════════════════════════════════════
-/// V1.5.0 新增。承载三块 Dart/插件层做不到的事：
+/// V1.6.0 起承载五块 Dart/插件层做不到或做不好的事：
 /// ═══════════════════════════════════════════════════════════════════
 ///
-/// 1. **系统语音对话框**（语音修复的关键兜底）
-///    speech_to_text 插件走 `SpeechRecognizer.createSpeechRecognizer()`
-///    服务连接 + 回调，这在 vivo/iQOO 的定制语音服务上不稳定。
-///    而 `RecognizerIntent.ACTION_RECOGNIZE_SPEECH` 是系统标准 Intent，
-///    由「当前默认语音引擎」弹一个带麦克风的对话框，说完把文字返回。
-///    微信语音转文字、大量主流 App 都用这一条路径 —— 它不依赖插件
-///    自己去连服务，兼容性远好于前者。
+/// 1. **原生语音识别器**（`SpeechRecognizer` 直接调用）
+///    speech_to_text 插件在 iQOO 上连续三版不工作（它自己的服务连接
+///    与回调封装存在兼容问题）。这一版绕开插件，用官方 API 自己实现，
+///    结果通过 [asrEvents] 事件流推回 Dart。
 ///
-/// 2. **循环响铃**（到点持续响，直到用户处理）
-///    通知渠道的铃声只播一遍，这是 Android 通知系统的固有行为。
-///    「一直响到吃药」只能由我们自己在响铃页用 MediaPlayer
-///    (setLooping) + Vibrator(循环波形) 实现。
+/// 2. **系统语音对话框**（`ACTION_RECOGNIZE_SPEECH`）
+///    微信语音转文字同款，由当前默认语音引擎弹标准麦克风窗口。
+///    作为最后的兜底 —— 前两条静默路径都不行时，让用户「看得见」地
+///    说一句。
 ///
-/// 3. **电池优化白名单**（后台/被杀收不到通知的主要解法）
-///    vivo「后台高耗电/速冻」会冻结应用并取消第三方 App 的闹钟。
-///    `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` 是标准豁免入口，
-///    需要在 manifest 声明 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 权限。
+/// 3. **后台守护前台服务** —— 「只在 App 界面里能提醒」的解法。
+///    前台服务优先级等同前台 App，系统不会轻易冻结，已排的闹钟
+///    才不会被 ROM 一并清掉。
+///
+/// 4. **循环响铃**（MediaPlayer loop + Vibrator 循环波形）。
+///
+/// 5. **电池优化白名单** + 屏幕常亮。
 class NativeBridge {
   NativeBridge._();
   static const MethodChannel _ch = MethodChannel('med_reminder/native');
 
   static bool get supported => Platform.isAndroid;
+
+  // ------------------------------------------------ 原生语音识别器事件
+
+  static final StreamController<NativeAsrEvent> _asrCtrl =
+      StreamController<NativeAsrEvent>.broadcast();
+
+  static bool _handlerBound = false;
+
+  /// 原生识别事件流（ready / partial / result / error / endOfSpeech）
+  static Stream<NativeAsrEvent> get asrEvents => _asrCtrl.stream;
+
+  /// 绑定原生 → Dart 的回调通道。
+  /// 只需在首次使用语音前调用一次（重复调用无副作用）。
+  static void bindAsrHandler() {
+    if (_handlerBound) return;
+    _handlerBound = true;
+    _ch.setMethodCallHandler((MethodCall call) async {
+      if (call.method != 'asrEvent') return null;
+      final Map<Object?, Object?> args =
+          (call.arguments as Map<Object?, Object?>?) ?? const <Object?, Object?>{};
+      _asrCtrl.add(NativeAsrEvent(
+        type: (args['type'] as String?) ?? '',
+        text: (args['text'] as String?) ?? '',
+        code: (args['code'] as int?) ?? 0,
+      ));
+      return null;
+    });
+  }
+
+  /// 是否有可用的系统语音识别服务（原生侧判断）
+  static Future<bool> get nativeAsrAvailable async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('nativeAsrAvailable') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 启动原生静默识别。返回是否成功启动。
+  static Future<bool> startNativeAsr({String language = 'zh-CN'}) async {
+    if (!supported) return false;
+    bindAsrHandler();
+    try {
+      return await _ch.invokeMethod<bool>(
+            'startNativeAsr',
+            <String, Object?>{'language': language},
+          ) ??
+          false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  static Future<void> stopNativeAsr() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('stopNativeAsr');
+    } catch (_) {}
+  }
 
   // ------------------------------------------------ 系统语音对话框
 
@@ -44,7 +128,6 @@ class NativeBridge {
       if (r is String && r.trim().isNotEmpty) return r.trim();
       return null;
     } on PlatformException {
-      // 设备上没有任何语音引擎时，系统会直接回错 —— 调用方按「无服务」处理
       return null;
     } on MissingPluginException {
       return null;
@@ -60,6 +143,35 @@ class NativeBridge {
       return const <String>[];
     } catch (_) {
       return const <String>[];
+    }
+  }
+
+  // ------------------------------------------------ 后台守护服务
+
+  /// 启动后台守护前台服务（App 在前台时调用才有效）
+  static Future<bool> startGuard() async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('startGuard') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> stopGuard() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('stopGuard');
+    } catch (_) {}
+  }
+
+  /// 守护服务当前是否在跑
+  static Future<bool> get isGuardRunning async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('isGuardRunning') ?? false;
+    } catch (_) {
+      return false;
     }
   }
 

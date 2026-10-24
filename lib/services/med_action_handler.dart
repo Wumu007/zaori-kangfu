@@ -40,6 +40,13 @@ Future<void> handleMedAction(String payload, String actionId) async {
   final DateTime? planned = DateTime.tryParse(atRaw);
   if (planned == null) return;
 
+  // 「测试提醒」不写库：payload 里带 test 标记，处理完只停铃收尾
+  if (data['test'] == '1') {
+    AlarmBus.instance.handle(payload);
+    await NativeBridge.ringStop();
+    return;
+  }
+
   final MedicationRepository repo = MedicationRepository.instance;
 
   // 点通知主体 = 打开 App 看清单，不写库；响铃页会靠 ring 标志自己弹

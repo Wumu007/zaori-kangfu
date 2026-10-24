@@ -7,7 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/medication.dart';
 import '../models/medication_draft.dart';
 import '../services/medication_nlu.dart';
-import '../services/voice_diag.dart';
+import '../services/app_log.dart';
 import '../services/voice_input_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -159,13 +159,13 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   // 语音：实时转写 → 结束自动填入 → 结果可改再重新填入
   // ---------------------------------------------------------------------------
 
-  /// 复制语音诊断日志（失败时用户把它发回来，我们就能定位卡在哪一步）
-  Future<void> _copyVoiceDiag() async {
+  /// 复制运行日志（语音失败时用户把它发回来，就能定位卡在哪一步）
+  Future<void> _copyAppLog() async {
     await Clipboard.setData(
-      ClipboardData(text: VoiceDiag.instance.report()),
+      ClipboardData(text: AppLog.instance.report()),
     );
     if (!mounted) return;
-    showAppToast(context, '诊断信息已复制，可粘贴发给我们');
+    showAppToast(context, '日志已复制，可粘贴发给我们');
   }
 
   Future<void> _startVoice() async {
@@ -812,23 +812,42 @@ class _MedicationEditPageState extends State<MedicationEditPage>
               ],
             ),
             const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                onPressed: _copyVoiceDiag,
-                icon: const Icon(Icons.copy_rounded, size: 15),
-                label: const Text(
-                  '复制诊断信息',
-                  style: TextStyle(fontSize: AppText.tiny),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: <Widget>[
+                // 三条路径都可能因为临时原因失败（服务忙、环境吵），
+                // 给一个「再试一次」而不是永久锁死
+                TextButton(
+                  onPressed: () {
+                    setState(() => _voiceFatal = false);
+                    _startVoice();
+                  },
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('再试一次',
+                      style: TextStyle(fontSize: AppText.tiny)),
                 ),
-                style: TextButton.styleFrom(
-                  foregroundColor: AppColors.muted,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                TextButton.icon(
+                  onPressed: _copyAppLog,
+                  icon: const Icon(Icons.copy_rounded, size: 15),
+                  label: const Text(
+                    '复制日志',
+                    style: TextStyle(fontSize: AppText.tiny),
+                  ),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.muted,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
                 ),
-              ),
+              ],
             ),
           ],
         ),

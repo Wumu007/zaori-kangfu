@@ -1,6 +1,10 @@
-import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
+
+import '../services/app_log.dart';
 import '../services/backup_service.dart';
 import '../services/native_bridge.dart';
 import '../services/reminder_scheduler.dart';
@@ -117,6 +121,19 @@ class SettingsPage extends StatelessWidget {
                   // 通知权限全开也一样收不到。加入电池优化白名单是标准解法。
                   const _BatteryRow(),
                   const SizedBox(height: AppSpace.gap),
+                  // V1.6.0：一键测试 —— 让「后台到底响不响」变成可验证的事，
+                  // 而不是每次都等真的吃药时间才发现没响。
+                  AppCard(
+                    shadow: true,
+                    child: AppNavRow(
+                      icon: AppIcons.reminder,
+                      tone: AppIconTone.orange,
+                      title: '测试提醒（10 秒后）',
+                      subtitle: '按一下然后锁屏，验证后台和锁屏能不能响',
+                      onTap: () => _testReminder(context),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpace.gap),
                   AppCard(
                     shadow: true,
                     child: Column(
@@ -199,6 +216,14 @@ class SettingsPage extends StatelessWidget {
                     child: Column(
                       children: <Widget>[
                         AppNavRow(
+                          icon: AppIcons.document,
+                          tone: AppIconTone.blue,
+                          title: '运行日志',
+                          subtitle: '语音 / 提醒没反应时，导出日志给我们定位',
+                          onTap: () => _openLogSheet(context),
+                        ),
+                        const AppDivider(),
+                        AppNavRow(
                           icon: AppIcons.backup,
                           tone: AppIconTone.purple,
                           title: '备份与恢复',
@@ -219,7 +244,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.5.0 · 本地版',
+                      '早日康复 v1.6.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -237,6 +262,32 @@ class SettingsPage extends StatelessWidget {
     final AppState state = AppState.instance;
     await state.settings.setSnoozeMinutes(minutes);
     await ReminderScheduler.instance.resync(state.meds);
+  }
+
+  /// 打开「运行日志」面板
+  ///
+  /// 日志里有两类信息最关键：
+  /// - 语音：每一步的路径与错误码，能定位到「插件不通 / 原生不通 /
+  ///   对话框不通」中的哪一个；
+  /// - 提醒：排程成败条数、权限快照、守护服务状态。
+  Future<void> _openLogSheet(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (BuildContext ctx) => const _LogSheet(),
+    );
+  }
+
+  /// 测试提醒：10 秒后响一条，用来当场验证后台/锁屏
+  Future<void> _testReminder(BuildContext context) async {
+    final bool ok = await ReminderScheduler.instance.testReminder(seconds: 10);
+    if (!context.mounted) return;
+    showAppToast(
+      context,
+      ok ? '10 秒后会响，现在锁屏或切到别的 App 等待' : '测试提醒排不了，请先检查「通知与闹钟权限」',
+      onUndo: null,
+    );
   }
 
   /// 打开权限体检面板
@@ -1111,5 +1162,183 @@ class _BatteryRowState extends State<_BatteryRow> with WidgetsBindingObserver {
         showChevron: !ok,
       ),
     );
+  }
+}
+
+/// 运行日志面板
+///
+/// 用户反馈「语音没反应」「提醒不响」时，让他打开这里：
+/// - 复制全部：直接粘到微信发过来；
+/// - 导出文件：走系统分享，一行行带着时间戳，比截图好用得多。
+///
+/// 日志只存在本机（应用私有目录 + 内存），不联网不上传。
+class _LogSheet extends StatefulWidget {
+  const _LogSheet();
+
+  @override
+  State<_LogSheet> createState() => _LogSheetState();
+}
+
+class _LogSheetState extends State<_LogSheet> {
+  @override
+  Widget build(BuildContext context) {
+    final AppLog log = AppLog.instance;
+    final List<String> lines = log.recent(150)
+        .reversed
+        .toList(); // 最新的在最上面，用户一打开就看到刚才的操作
+
+    return Container(
+      height: MediaQuery.sizeOf(context).height * 0.82,
+      decoration: const BoxDecoration(
+        color: AppColors.bg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          children: <Widget>[
+            // 抓手
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 6),
+              width: 38,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.line,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 12, 10),
+              child: Row(
+                children: <Widget>[
+                  const AppIconTile(
+                    AppIcons.document,
+                    tone: AppIconTone.blue,
+                    size: 32,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        const Text(
+                          '运行日志',
+                          style: TextStyle(
+                            fontSize: AppText.h2,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                        Text(
+                          '共 ${log.length} 条 · 只存本机，不会上传',
+                          style: const TextStyle(
+                            fontSize: AppText.tiny,
+                            color: AppColors.muted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('关闭'),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: AppColors.line),
+            Expanded(
+              child: lines.isEmpty
+                  ? const Center(
+                      child: Text(
+                        '还没有日志。\n先用一次语音或提醒，再回来看。',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: AppText.caption,
+                          height: 1.7,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                      itemCount: lines.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 6),
+                      itemBuilder: (BuildContext c, int i) {
+                        final String line = lines[i];
+                        // 错误行标红，方便用户一眼看出「有异常」
+                        final bool isErr = line.contains('[ERROR]');
+                        return SelectableText(
+                          line,
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            height: 1.45,
+                            fontFamily: 'monospace',
+                            color: isErr ? AppColors.danger : AppColors.sub,
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            const Divider(height: 1, color: AppColors.line),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: PrimaryButton(
+                      label: '复制全部',
+                      onPressed: _copyAll,
+                      height: 44,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: GhostPill(
+                      label: '导出文件',
+                      icon: AppIcons.exportFile,
+                      onTap: _export,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copyAll() async {
+    await Clipboard.setData(ClipboardData(text: AppLog.instance.report()));
+    if (!mounted) return;
+    showAppToast(context, '日志已复制，可直接粘贴发出去');
+  }
+
+  Future<void> _export() async {
+    final File? f = await AppLog.instance.exportFile();
+    if (!mounted) return;
+    if (f == null) {
+      showAppToast(context, '导出失败，可改用「复制全部」');
+      return;
+    }
+    Rect? origin;
+    final RenderObject? box = context.findRenderObject();
+    if (box is RenderBox && box.hasSize) {
+      origin = box.localToGlobal(Offset.zero) & box.size;
+    }
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          files: <XFile>[XFile(f.path)],
+          subject: '早日康复 · 运行日志',
+          text: '来自「早日康复」的运行日志，用于定位语音/提醒问题。',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      showAppToast(context, '这台手机没能打开分享，可改用「复制全部」');
+    }
   }
 }

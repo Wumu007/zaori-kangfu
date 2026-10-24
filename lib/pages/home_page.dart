@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../models/day_slot.dart';
 import '../models/medication.dart';
+import '../services/native_bridge.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
@@ -71,7 +71,7 @@ class HomePage extends StatelessWidget {
       ),
       children: <Widget>[
         // 通知权限没拿到时，必须明说，否则用户会以为 App 坏了
-        if (!state.notificationGranted) const _PermissionBanner(),
+        _MissBanner(onOpenSettings: onOpenSettings),
         if (state.todayTotal > 0) _ProgressCard(state: state),
         const SizedBox(height: AppSpace.gapLg),
         // V1.4.0：章节标题统一走 SectionHeader，右侧入口带小箭头图标
@@ -441,11 +441,79 @@ class _SlotTile extends StatelessWidget {
 /// 【为什么必须有】用户装完 App 直接进首页，如果通知权限没给，
 /// 到点了什么都不会响，但界面上看不出任何异常 —— 用户只会以为 App 坏了。
 /// 所以这里必须显式提示，并给一个直达系统设置的按钮。
-class _PermissionBanner extends StatelessWidget {
-  const _PermissionBanner();
+class _MissBanner extends StatefulWidget {
+  const _MissBanner({required this.onOpenSettings});
+
+  final VoidCallback onOpenSettings;
+
+  @override
+  State<_MissBanner> createState() => _MissBannerState();
+}
+
+/// 首页「后台提醒可能不响」提示条
+///
+/// ═══════════════════════════════════════════════════════════════════
+/// V1.6.0：从「只看通知权限」升级为「四项体检」
+/// ═══════════════════════════════════════════════════════════════════
+///
+/// 实测反馈「只有 App 界面里能提醒」时，通知权限其实是开的 ——
+/// 真正让后台提醒失效的是另外三项：电池白名单、后台守护服务、
+/// 精确闹钟。这些藏在设置页里用户根本不会去翻，所以在首页显眼位置
+/// 摆一条提示，把缺口逐条列出来，点一下直达设置页对应入口。
+class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
+  bool _notif = true;
+  bool _battery = true;
+  bool _guard = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final bool battery = await NativeBridge.isIgnoringBatteryOptimizations;
+      bool guard = await NativeBridge.isGuardRunning;
+      if (!guard) {
+        // 回前台时补一次启动（Android 不允许后台启动前台服务）
+        guard = await NativeBridge.startGuard();
+      }
+      if (!mounted) return;
+      setState(() {
+        _notif = AppState.instance.notificationGranted;
+        _battery = battery;
+        _guard = guard;
+      });
+    } catch (_) {}
+  }
+
+  List<String> get _gaps {
+    final List<String> out = <String>[];
+    if (!_notif) out.add('通知没打开');
+    if (!_battery) out.add('没加入电池白名单');
+    if (!_guard) out.add('后台守护未运行');
+    return out;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final List<String> gaps = _gaps;
+    if (gaps.isEmpty) return const SizedBox.shrink();
+
+    final bool severe = !_notif;
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
@@ -460,28 +528,28 @@ class _PermissionBanner extends StatelessWidget {
           const Padding(
             padding: EdgeInsets.only(top: 1),
             child: Icon(
-              AppIcons.reminderOff,
+              AppIcons.warning,
               size: 18,
               color: AppColors.warn,
             ),
           ),
           const SizedBox(width: 10),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  '通知没打开，到点不会提醒',
-                  style: TextStyle(
+                  severe ? '通知没打开，到点不会提醒' : '后台或锁屏可能不响',
+                  style: const TextStyle(
                     fontSize: AppText.caption,
                     fontWeight: FontWeight.w600,
                     color: AppColors.warn,
                   ),
                 ),
-                SizedBox(height: 3),
+                const SizedBox(height: 3),
                 Text(
-                  '点右边「去开启」，允许通知并打开闹钟，提醒才会准时响。',
-                  style: TextStyle(
+                  '${gaps.join('、')}。\n点右边去逐项开启，开关后可用「测试提醒」验证。',
+                  style: const TextStyle(
                     fontSize: AppText.tiny,
                     height: 1.45,
                     color: AppColors.sub,
@@ -492,7 +560,7 @@ class _PermissionBanner extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           TextButton(
-            onPressed: () => openAppSettings(),
+            onPressed: widget.onOpenSettings,
             style: TextButton.styleFrom(
               minimumSize: const Size(0, 32),
               padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -503,7 +571,7 @@ class _PermissionBanner extends StatelessWidget {
                 fontWeight: FontWeight.w600,
               ),
             ),
-            child: const Text('去开启'),
+            child: const Text('去设置'),
           ),
         ],
       ),

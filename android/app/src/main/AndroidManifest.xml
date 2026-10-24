@@ -45,6 +45,12 @@
          Google Play 对闹钟/提醒类 App 允许申请此权限 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- V1.6.0：后台守护前台服务。
+         Android 12+ 的前台服务必须有常驻通知；Android 14+ 必须声明
+         foregroundServiceType。用药提醒属于「特殊用途」，用 specialUse。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <!-- 语音识别 / TTS 在 Android 11+ 需要显式声明可见性 -->
     <queries>
         <intent>
@@ -107,5 +113,19 @@
         <receiver
             android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
             android:exported="false" />
+
+        <!-- ==================================================================
+             后台守护前台服务（V1.6.0）
+             「只在 App 界面里能提醒」的直接解法：前台服务优先级等同前台
+             App，系统不会轻易冻结，App 排的闹钟才不会被一并清掉。
+             ================================================================== -->
+        <service
+            android:name=".ReminderGuardService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="medication reminder reliability" />
+        </service>
     </application>
 </manifest>
