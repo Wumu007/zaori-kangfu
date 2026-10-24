@@ -245,7 +245,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.6.0 · 本地版',
+                      '早日康复 v1.7.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),

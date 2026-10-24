@@ -27,7 +27,13 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final AppLog log = AppLog.instance;
+  // 先把上次运行留下的日志读回内存（V1.7.0：跨启动累积，不再每次清空）
+  await log.bootstrap();
   log.log(LogTag.app, '冷启动开始');
+
+  // 必须尽早绑定原生 → Dart 的回调通道：
+  // 不用语音的用户也要能收到「原生通知被点开」的事件（进响铃页）
+  NativeBridge.bindAsrHandler();
 
   await ReminderScheduler.instance.init(onAction: _onNotificationEvent);
 
@@ -58,6 +64,10 @@ Future<void> main() async {
 }
 
 /// 组装根 Widget；同时处理「冷启动来自服药提醒通知」的场景
+///
+/// 两个来源都要看：
+/// 1. flutter_local_notifications 的 launchDetails（通道一）；
+/// 2. 原生 Intent extra（通道二，GuardAlarm 发的通知）。
 Future<Widget> _buildApp() async {
   String? ringingPayload;
   try {
@@ -67,12 +77,37 @@ Future<Widget> _buildApp() async {
         resp != null &&
         _isRingingPayload(resp.payload)) {
       ringingPayload = resp.payload;
-      AppLog.instance.notify('冷启动来自提醒通知', '进入响铃页');
+      AppLog.instance.notify('冷启动来自提醒通知', '通道一（插件）');
     }
   } catch (e) {
     // 取不到冷启动信息就当普通启动
     AppLog.instance.error('读取冷启动通知', e);
   }
+
+  // 通道二：原生通知点开时把 payload 放在 Intent extra 里
+  if (ringingPayload == null) {
+    try {
+      final String? nativePayload = await NativeBridge.takePendingPayload();
+      if (_isRingingPayload(nativePayload)) {
+        ringingPayload = nativePayload;
+        AppLog.instance.notify('冷启动来自原生通知', '通道二，进入响铃页');
+      }
+    } catch (e) {
+      AppLog.instance.error('读取原生 payload', e);
+    }
+  }
+
+  // 热启动：App 已在运行时点原生通知 → 原生推事件，这里取 payload 并进响铃页
+  NativeBridge.ringingRequests.listen((_) async {
+    try {
+      final String? p = await NativeBridge.takePendingPayload();
+      if (_isRingingPayload(p)) {
+        AppLog.instance.notify('点开原生通知', '热启动进响铃页');
+        AppNav.openRinging(p!);
+      }
+    } catch (_) {}
+  });
+
   return MedReminderApp(initialRingingPayload: ringingPayload);
 }
 

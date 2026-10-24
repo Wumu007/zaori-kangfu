@@ -267,28 +267,38 @@ class VoiceInputService {
     String buf = '';
     Timer? timeout;
 
-    await _engine.start(
-      onResult: (String text, bool isFinal) {
-        if (text.trim().isEmpty) return;
-        logx.voice(isFinal ? '路径A 最终结果' : '路径A 部分结果', text);
-        if (isFinal) {
-          buf += text;
-          onFinal(text.trim());
-        } else {
-          onPartial(text.trim());
-        }
-      },
-      onError: (String message, AsrFailure kind) {
-        logx.voice('路径A 错误', '$kind | $message');
-      },
-      onStopped: () {
-        logx.voice('路径A 会话结束', '累计 ${buf.trim().length} 字');
-        if (!done.isCompleted) {
-          done.complete(buf.trim().isEmpty ? null : buf);
-        }
-      },
-    );
-    logx.voice('路径A listen 已下发');
+    // V1.7.0：start() 内部可能卡在插件的 locales() 上（用户日志已证实），
+    // 这里再套一层 5 秒硬超时 —— 无论插件怎么闹，都必须让流程回到
+    // 调用方，否则后面的「系统语音对话框」永远轮不到。
+    try {
+      await _engine.start(
+        onResult: (String text, bool isFinal) {
+          if (text.trim().isEmpty) return;
+          logx.voice(isFinal ? '路径A 最终结果' : '路径A 部分结果', text);
+          if (isFinal) {
+            buf += text;
+            onFinal(text.trim());
+          } else {
+            onPartial(text.trim());
+          }
+        },
+        onError: (String message, AsrFailure kind) {
+          logx.voice('路径A 错误', '$kind | $message');
+        },
+        onStopped: () {
+          logx.voice('路径A 会话结束', '累计 ${buf.trim().length} 字');
+          if (!done.isCompleted) {
+            done.complete(buf.trim().isEmpty ? null : buf);
+          }
+        },
+      ).timeout(const Duration(seconds: 5), onTimeout: () {
+        logx.voice('路径A start 超时', '5 秒未返回');
+      });
+      logx.voice('路径A listen 已下发');
+    } catch (e, st) {
+      logx.error('路径A start 异常', e, st);
+      if (!done.isCompleted) done.complete(null);
+    }
 
     timeout = Timer(const Duration(seconds: 4), () {
       logx.voice('路径A 超时', '4 秒');

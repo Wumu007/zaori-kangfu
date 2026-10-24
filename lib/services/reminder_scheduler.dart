@@ -10,6 +10,7 @@ import '../models/day_slot.dart';
 import '../models/medication.dart';
 import 'app_log.dart';
 import 'app_settings.dart';
+import 'native_bridge.dart';
 
 /// 通知点击动作
 ///
@@ -406,6 +407,52 @@ class ReminderScheduler {
       '排程汇总',
       '成功 $ok 条 / 失败 $fail 条 / 在提醒 ${meds.where((m) => m.enabled).length} 种药',
     );
+
+    // ═══════════════════════════════════════════════════════════════
+    // 第二通道（V1.7.0）
+    // ═══════════════════════════════════════════════════════════════
+    // 用户日志证明权限/白名单/排程全正常，但后台仍不响 —— 说明系统
+    // 拦掉的是插件那批 alarm。这里把未来两天的提醒再交给原生排一遍，
+    // 用自己的 AlarmManager + 静态 receiver 走独立通道。
+    // 两条通道用同一通知 id，谁先响都只有一个通知。
+    try {
+      final int n = await _syncGuardChannel(meds);
+      AppLog.instance.notify('第二通道已排', '$n 条（原生 alarm）');
+    } catch (e) {
+      AppLog.instance.error('第二通道排程', e);
+    }
+  }
+
+  /// 把未来两天内的提醒整理成 JSON 交给原生
+  ///
+  /// 只排两天：够覆盖「用户几天不打开 App」的常见场景，
+  /// 又不会让系统里的 alarm 数量失控（部分 ROM 对单应用 alarm 数量有限制）。
+  Future<int> _syncGuardChannel(List<Medication> meds) async {
+    final DateTime now = DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final List<Map<String, Object?>> items = <Map<String, Object?>>[];
+
+    for (final Medication med in meds) {
+      if (!med.enabled) continue;
+      for (int i = 0; i < 2; i++) {
+        final DateTime day = today.add(Duration(days: i));
+        if (!med.coversDay(day)) continue;
+        for (final String hm in med.times) {
+          final DateTime when = atHm(day, hm);
+          if (!when.isAfter(now)) continue;
+          items.add(<String, Object?>{
+            'id': _idOf(med.id, when),
+            'at': when.millisecondsSinceEpoch,
+            'title': '该吃药了',
+            'body': med.notificationBody,
+            'name': med.name,
+            'payload': _payload(med, when),
+          });
+        }
+      }
+    }
+    await NativeBridge.setGuardSchedule(jsonEncode(items));
+    return items.length;
   }
 
   Future<bool> _schedule(Medication med, DateTime when) async {

@@ -58,10 +58,18 @@ class NativeBridge {
   static final StreamController<NativeAsrEvent> _asrCtrl =
       StreamController<NativeAsrEvent>.broadcast();
 
+  /// 原生通知被点开（第二通道发的通知不带 fln 的 payload 回调，
+  /// 只能由原生主动告诉 Dart「有 payload 可取」）
+  static final StreamController<void> _ringingCtrl =
+      StreamController<void>.broadcast();
+
   static bool _handlerBound = false;
 
   /// 原生识别事件流（ready / partial / result / error / endOfSpeech）
   static Stream<NativeAsrEvent> get asrEvents => _asrCtrl.stream;
+
+  /// 「原生通知被点开了」事件流。收到后调用 [takePendingPayload] 取 payload。
+  static Stream<void> get ringingRequests => _ringingCtrl.stream;
 
   /// 绑定原生 → Dart 的回调通道。
   /// 只需在首次使用语音前调用一次（重复调用无副作用）。
@@ -69,6 +77,10 @@ class NativeBridge {
     if (_handlerBound) return;
     _handlerBound = true;
     _ch.setMethodCallHandler((MethodCall call) async {
+      if (call.method == 'ringingPayload') {
+        _ringingCtrl.add(null);
+        return null;
+      }
       if (call.method != 'asrEvent') return null;
       final Map<Object?, Object?> args =
           (call.arguments as Map<Object?, Object?>?) ?? const <Object?, Object?>{};
@@ -172,6 +184,33 @@ class NativeBridge {
       return await _ch.invokeMethod<bool>('isGuardRunning') ?? false;
     } catch (_) {
       return false;
+    }
+  }
+
+  // ------------------------------------------------ 第二通道排程
+
+  /// 把未来提醒表交给原生，由原生用自己的 AlarmManager 再排一批
+  ///
+  /// 为什么要有两条通道：用户日志证明权限、白名单、排程全都正常，
+  /// 但插件那批 alarm 在后台会被系统拦掉。两条独立通道互为备份，
+  /// 任一触发都会发同 id 的通知（不会重复出现）。
+  static Future<void> setGuardSchedule(String json) async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<bool>(
+        'setGuardSchedule',
+        <String, Object?>{'json': json},
+      );
+    } catch (_) {}
+  }
+
+  /// 取「原生通知点开时带来的 payload」
+  static Future<String?> takePendingPayload() async {
+    if (!supported) return null;
+    try {
+      return await _ch.invokeMethod<String>('takePendingPayload');
+    } catch (_) {
+      return null;
     }
   }
 

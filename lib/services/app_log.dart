@@ -17,68 +17,98 @@ class LogTag {
 /// 应用运行日志
 ///
 /// ═══════════════════════════════════════════════════════════════════
-/// 为什么必须有（用户 V1.5.0 反馈第 3 条直接要求）
+/// V1.7.0：改为**跨启动累积**（用户 V1.6.0 实测反馈第 1 条）
 /// ═══════════════════════════════════════════════════════════════════
 ///
-/// 语音连续三个版本修不好、后台提醒连续两版不准 —— 根本原因不是不会改，
-/// 而是**手里没有运行时证据**：只知道「不行」，不知道死在哪一步。
+/// 上一版每次冷启动都从空列表开始、落盘时整份覆盖 —— 等于
+/// 「每次进 App 日志就被清空」。而真实问题往往发生在**上一次运行**
+/// （到点没响、点通知黑屏），等用户回到 App 想导出时证据已经没了。
 ///
-/// 这份日志按链路打标签：
-/// - [LogTag.voice]：麦克风权限 → 插件初始化 → 支持的语言 → listen →
-///   结果/错误码 → 看门狗 → 原生识别器 → 系统对话框，每一步都有时间戳；
-/// - [LogTag.notify]：每次排程的 id/时刻/成功失败、排程总数、电池白名单
-///   状态、前台服务状态、通知是否真的发出；
-/// - [LogTag.perm]：启动时完整权限快照（通知/精确闹钟/电池/麦克风）；
-/// - [LogTag.error]：所有捕获到的异常。
+/// 现在：
+/// - [bootstrap] 启动时把已有文件读回内存（只留最近 [maxLines] 行）；
+/// - 之后所有记录都追加，落盘写「历史 + 本次」；
+/// - 超过 [maxLines] 自动丢最旧的，避免无限膨胀；
+/// - 报告头标明「本次会话 X 条 / 累计 Y 条」，能看出跨了几次启动。
 ///
-/// 用户从「我的 → 运行日志」一键复制或导出文件发回来，就能精确定位。
+/// 日志只存本机应用私有目录，不联网、不上传。
 class AppLog {
   AppLog._();
   static final AppLog instance = AppLog._();
 
-  static const int _maxEntries = 400;
+  /// 累计保留的最大行数
+  static const int maxLines = 1500;
   static const String _fileName = 'app_log.txt';
 
-  final List<String> _lines = <String>[];
+  /// 历史 + 本次，统一存在这里（导出时按顺序输出）
+  final List<String> _all = <String>[];
+  int _sessionCount = 0;
+
   final Stopwatch _clock = Stopwatch()..start();
   Timer? _flushTimer;
   String _sessionId = '';
+  bool _booted = false;
 
-  /// 会话 id：每次冷启动换一个，日志里能区分「这是哪一次运行」
-  String get sessionId => _sessionId;
-
-  /// 最近 N 条（设置页展示用）
-  List<String> recent([int n = 80]) {
-    if (_lines.length <= n) return List<String>.from(_lines);
-    return _lines.sublist(_lines.length - n);
+  String get sessionId {
+    if (_sessionId.isEmpty) {
+      _sessionId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
+    }
+    return _sessionId;
   }
 
-  int get length => _lines.length;
+  /// 本次会话写入了多少条
+  int get sessionCount => _sessionCount;
+
+  /// 最近 N 条（设置页展示用，含历史）
+  List<String> recent([int n = 80]) {
+    if (_all.length <= n) return List<String>.from(_all);
+    return _all.sublist(_all.length - n);
+  }
+
+  /// 累计条数
+  int get length => _all.length;
+
+  /// 启动时调用一次：把上次运行留下的日志读回内存
+  ///
+  /// 读失败（首次安装、文件损坏）不影响使用，静默从空开始。
+  Future<void> bootstrap() async {
+    if (_booted) return;
+    _booted = true;
+    _sessionId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
+    try {
+      final File f = await _file();
+      if (await f.exists()) {
+        final String content = await f.readAsString();
+        final List<String> parsed = content
+            .split('\n')
+            .where((String l) => l.startsWith('['))
+            .toList();
+        if (parsed.length > maxLines) {
+          parsed.removeRange(0, parsed.length - maxLines);
+        }
+        _all.addAll(parsed);
+      }
+    } catch (_) {}
+    // 分隔线：明确「以下是本次启动」
+    _append('${_stamp()}[APP] ───── 本次启动 session=$_sessionId ─────');
+  }
 
   /// 写一条日志。永远不抛异常 —— 日志绝不能把主链路带崩。
-  void log(String tag, String event, [String detail = '']) {    try {
-      if (_sessionId.isEmpty) {
-        _sessionId = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
-      }
-      final String ts = _stamp();
+  void log(String tag, String event, [String detail = '']) {
+    try {
       final String line = detail.isEmpty
-          ? '[$ts][$tag] $event'
-          : '[$ts][$tag] $event | $detail';
-      _lines.add(line);
-      if (_lines.length > _maxEntries) _lines.removeRange(0, 32);
+          ? '${_stamp()}[$tag] $event'
+          : '${_stamp()}[$tag] $event | $detail';
+      _append(line);
       if (kDebugMode) debugPrint('APP-LOG $line');
-      _scheduleFlush();
     } catch (_) {}
   }
 
-  /// 记异常（带类型，不带超长堆栈 —— 只取前 3 行足够定位）
+  /// 记异常（带类型，堆栈只取前 3 行，足够定位）
   void error(String where, Object e, [StackTrace? st]) {
-    final String stack = (st ?? StackTrace.empty)
-        .toString()
-        .split('\n')
-        .take(3)
-        .join(' <- ');
-    log(LogTag.error, where, '${e.runtimeType}: $e${stack.isEmpty ? '' : ' @ $stack'}');
+    final String stack =
+        (st ?? StackTrace.empty).toString().split('\n').take(3).join(' <- ');
+    log(LogTag.error, where,
+        '${e.runtimeType}: $e${stack.isEmpty ? '' : ' @ $stack'}');
   }
 
   /// 语音链路简写
@@ -93,36 +123,50 @@ class AppLog {
   void perm(String event, [String detail = '']) =>
       log(LogTag.perm, event, detail);
 
+  void _append(String line) {
+    _all.add(line);
+    _sessionCount++;
+    if (_all.length > maxLines) {
+      _all.removeRange(0, _all.length - maxLines);
+    }
+    _scheduleFlush();
+  }
+
   String _stamp() {
-    final d = DateTime.now();
-    final elapsed = _clock.elapsed;
+    final DateTime d = DateTime.now();
+    final Duration elapsed = _clock.elapsed;
     String two(int v) => v.toString().padLeft(2, '0');
-    final String ms = elapsed.inMilliseconds.remainder(1000).toString().padLeft(3, '0');
-    return '${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}:${two(d.second)}'
-        '.$ms +${elapsed.inSeconds}s';
+    final String ms =
+        elapsed.inMilliseconds.remainder(1000).toString().padLeft(3, '0');
+    return '${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}:'
+        '${two(d.second)}.$ms +${elapsed.inSeconds}s ';
   }
 
   /// 完整报告（复制/导出用）
   String report() {
     final StringBuffer sb = StringBuffer()
       ..writeln('===== 早日康复 · 运行日志 =====')
-      ..writeln('会话: ${sessionId.isEmpty ? '-' : sessionId}')
+      ..writeln('本次会话: $sessionId（$_sessionCount 条）')
+      ..writeln('累计条数: ${_all.length}')
       ..writeln('设备时间: ${DateTime.now().toIso8601String()}')
-      ..writeln('平台: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}')
-      ..writeln('日志条数: ${_lines.length}')
+      ..writeln(
+          '平台: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}')
       ..writeln('-----------------------------------------------');
-    for (final String l in _lines) {
-      sb.writeln(l);
+    if (_all.isEmpty) {
+      sb.writeln('（暂无记录：请先使用一次相关功能再导出）');
+    } else {
+      for (final String l in _all) {
+        sb.writeln(l);
+      }
     }
-    if (_lines.isEmpty) sb.writeln('（暂无记录：请先使用一次相关功能再导出）');
     return sb.toString();
   }
 
   /// 写到缓存目录，返回文件（供系统分享面板导出）
   Future<File?> exportFile() async {
     try {
-      final dir = await getTemporaryDirectory();
-      final f = File('${dir.path}/$_fileName');
+      final Directory dir = await getTemporaryDirectory();
+      final File f = File('${dir.path}/$_fileName');
       await f.writeAsString(report(), flush: true);
       return f;
     } catch (e) {
@@ -131,13 +175,19 @@ class AppLog {
     }
   }
 
+  /// 清空（仅用户手动操作）
   Future<void> clear() async {
-    _lines.clear();
+    _all.clear();
+    _sessionCount = 0;
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final f = File('${dir.path}/$_fileName');
+      final File f = await _file();
       if (await f.exists()) await f.delete();
     } catch (_) {}
+  }
+
+  Future<File> _file() async {
+    final Directory dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/$_fileName');
   }
 
   /// 落盘做 300ms 防抖：语音识别过程中会密集写日志，避免频繁 IO
@@ -150,8 +200,7 @@ class AppLog {
 
   Future<void> _flush() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final f = File('${dir.path}/$_fileName');
+      final File f = await _file();
       await f.writeAsString(report(), flush: false);
     } catch (_) {
       // 磁盘问题忽略，内存里那份仍在

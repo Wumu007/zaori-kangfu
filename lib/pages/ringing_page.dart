@@ -8,6 +8,7 @@ import '../services/native_bridge.dart';
 import '../state/app_state.dart';
 import '../services/reminder_scheduler.dart';
 import '../theme/app_theme.dart';
+import 'app_shell.dart';
 
 /// 到点响铃页
 ///
@@ -46,13 +47,19 @@ class _RingingPageState extends State<RingingPage> {
   String _body = '';
   DateTime? _planned;
 
+  /// payload 解析后是否拿到了有效内容
+  bool _valid = false;
+
   @override
   void initState() {
     super.initState();
     _parse();
-    // 循环响铃 + 屏幕常亮
-    NativeBridge.ringStart();
-    NativeBridge.keepScreenOn(true);
+    // 没有有效 payload（例如冷启动路由没带上参数）时不要响铃，
+    // 否则用户会看到一个响个不停的空白页
+    if (_valid) {
+      NativeBridge.ringStart();
+      NativeBridge.keepScreenOn(true);
+    }
     // 这条已经被处理过（通知栏直接点的按钮）？→ 立即退出，不响铃
     if (AlarmBus.instance.isHandled(widget.payload)) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _close());
@@ -79,7 +86,17 @@ class _RingingPageState extends State<RingingPage> {
   void _close() {
     if (!mounted) return;
     NativeBridge.ringStop();
-    Navigator.of(context).pop();
+    final NavigatorState nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.pop();
+    } else {
+      // 冷启动直接落在响铃页时，栈里只有它自己 —— pop 之后没有页面，
+      // 就会停在黑屏上（用户反馈的「需要杀进程重进」就是这个）。
+      // 这里改成替换成主界面。
+      nav.pushReplacement(
+        MaterialPageRoute<void>(builder: (_) => const AppShell()),
+      );
+    }
   }
 
   void _parse() {
@@ -88,7 +105,10 @@ class _RingingPageState extends State<RingingPage> {
       _name = (data['name'] as String?) ?? '';
       _body = (data['body'] as String?) ?? '';
       _planned = DateTime.tryParse(data['at'] as String? ?? '');
-    } catch (_) {}
+      _valid = (data['med'] as String?) != null && _planned != null;
+    } catch (_) {
+      _valid = false;
+    }
   }
 
   /// 三个按钮共用：处理 →（handleMedAction 内部会广播+停铃）→ 关页
@@ -107,6 +127,58 @@ class _RingingPageState extends State<RingingPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 没有有效内容：给一张说明卡 + 回主界面按钮，绝不显示空白深色页
+    if (!_valid) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF101828),
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpace.pageX + 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Icon(Icons.alarm_off_rounded,
+                      size: 44, color: Colors.white38),
+                  const SizedBox(height: 14),
+                  const Text(
+                    '这条提醒已经没有内容了',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '可能已经处理过，或者提醒已被取消。\n回到清单看看今天的用药情况。',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: AppText.caption,
+                      height: 1.6,
+                      color: Colors.white54,
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    width: 180,
+                    child: _BigButton(
+                      label: '回到清单',
+                      icon: Icons.list_alt_rounded,
+                      background: const Color(0xFF2A3546),
+                      foreground: Colors.white,
+                      onTap: _close,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     final int snoozeMinutes = AppState.instance.settings.snoozeMinutes;
     // 返回键可直接退出：铃声在 dispose 里停。
     // 用户没做决定时不强迫他面对响铃页，但铃声停了之后

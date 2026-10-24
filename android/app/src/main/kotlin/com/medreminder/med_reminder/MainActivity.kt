@@ -47,6 +47,11 @@ class MainActivity : FlutterActivity() {
         private const val CHANNEL = "med_reminder/native"
         private const val REQ_SPEECH = 40001
 
+        /** 原生通知带过来的服药 payload（Dart 侧 takePendingPayload 取用） */
+        const val EXTRA_PAYLOAD = "med_payload"
+
+        @Volatile internal var pendingPayload: String? = null
+
         // ═══════════════════════════════════════════════════════════════
         // 响铃状态放伴生对象：
         // ActionBroadcastReceiver（通知栏按钮）在进程未拉起 UI 时也能收到
@@ -62,6 +67,83 @@ class MainActivity : FlutterActivity() {
             player = null
             try { vibrator?.cancel() } catch (_: Exception) {}
             vibrator = null
+        }
+
+        /**
+         * 开始循环响铃。
+         *
+         * ═══════════════════════════════════════════════════════════
+         * V1.7.0 修复「点闹钟后黑屏」（用户实测反馈第 2 条之二）
+         * ═══════════════════════════════════════════════════════════
+         *
+         * 旧实现用 `MediaPlayer.prepare()` —— 那是**同步阻塞**调用，
+         * 而且是在主线程（UI 线程）上调的。冷启动点通知时，Flutter
+         * 引擎还在初始化，主线程又被 prepare 卡住读铃声文件，界面就
+         * 停在深色底上不动，看起来就是「黑屏」，严重时要杀进程。
+         *
+         * 现在改用 `prepareAsync()` + `setOnPreparedListener`：
+         * 主线程立刻返回，铃声在后台解码好再响，UI 不会被堵。
+         */
+        @JvmStatic fun ringStart(context: Context) = ringStartImpl(context)
+
+        private fun ringStartImpl(context: Context) {
+            if (player != null) return // 已经在响，避免叠加
+            ringStop()
+
+            val uri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ?: return
+            try {
+                val p = MediaPlayer()
+                p.setDataSource(context, uri)
+                p.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                p.isLooping = true
+                p.setOnPreparedListener { mp ->
+                    try {
+                        mp.start()
+                    } catch (_: Exception) {}
+                }
+                p.setOnErrorListener { mp, _, _ ->
+                    try { mp.release() } catch (_: Exception) {}
+                    if (player === mp) player = null
+                    true
+                }
+                player = p
+                // 关键：异步准备，不阻塞 UI 线程
+                p.prepareAsync()
+            } catch (_: Exception) {
+                player = null
+            }
+
+            // 震动：长-短-长循环（与通知渠道节奏一致）
+            try {
+                val v = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE)
+                        as android.os.VibratorManager
+                    vm.defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    v.vibrate(
+                        VibrationEffect.createWaveform(
+                            longArrayOf(0, 800, 400, 800, 400, 800), 0
+                        )
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    v.vibrate(longArrayOf(0, 800, 400, 800, 400, 800), 0)
+                }
+                vibrator = v
+            } catch (_: Exception) {
+                vibrator = null
+            }
         }
 
         /**
@@ -87,6 +169,19 @@ class MainActivity : FlutterActivity() {
             try {
                 context.stopService(Intent(context, ReminderGuardService::class.java))
             } catch (_: Exception) {}
+        }
+
+        /**
+         * 取出「原生通知点开时带过来的 payload」。
+         *
+         * 第二通道（GuardAlarm）发的通知不是 flutter_local_notifications
+         * 发的，因此它的点击不会出现在 getNotificationAppLaunchDetails 里，
+         * 只能通过 Activity 的 Intent extra 传过来，由 Dart 主动来取。
+         */
+        @JvmStatic fun takePendingPayload(): String? {
+            val v = pendingPayload
+            pendingPayload = null
+            return v
         }
     }
 
@@ -141,6 +236,12 @@ class MainActivity : FlutterActivity() {
                     "nativeAsrAvailable" -> result.success(
                         try { SpeechRecognizer.isRecognitionAvailable(this) } catch (e: Exception) { false }
                     )
+                    "setGuardSchedule" -> {
+                        val json = call.argument<String>("json") ?: "[]"
+                        GuardAlarm.setSchedule(this, json)
+                        result.success(true)
+                    }
+                    "takePendingPayload" -> result.success(takePendingPayload())
                     else -> result.notImplemented()
                 }
             }
@@ -306,54 +407,7 @@ class MainActivity : FlutterActivity() {
     // 2. 循环响铃（铃声 + 震动都循环，直到 ringStop）
     // ═══════════════════════════════════════════════════════════════
 
-    private fun startRinging(context: Context) {
-        if (player != null) return // 已经在响，避免叠加
-        ringStop() // 先清干净旧实例
-
-        // 铃声：系统默认闹钟铃声；取不到就退到默认铃声
-        val uri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ?: return
-        try {
-            val p = MediaPlayer()
-            p.setDataSource(context, uri)
-            // 走「闹钟」音量流：用户媒体音量常调零，闹钟流独立可调
-            p.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
-            p.isLooping = true
-            p.prepare()
-            p.start()
-            player = p
-        } catch (_: Exception) {
-            player = null
-        }
-
-        // 震动：长-短-长循环（与通知渠道的节奏一致）
-        try {
-            val v = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager
-                vm.defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // 0ms 停顿 → 800ms 震 → 400ms 停 → 800ms 震 → 400ms 停，循环
-                v.vibrate(VibrationEffect.createWaveform(
-                    longArrayOf(0, 800, 400, 800, 400, 800), 0))
-            } else {
-                @Suppress("DEPRECATION")
-                v.vibrate(longArrayOf(0, 800, 400, 800, 400, 800), 0)
-            }
-            vibrator = v
-        } catch (_: Exception) {
-            vibrator = null
-        }
-    }
+    private fun startRinging(context: Context) = ringStart(context)
 
     // ═══════════════════════════════════════════════════════════════
     // 3. 电池优化白名单
@@ -405,6 +459,30 @@ class MainActivity : FlutterActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
+        }
+        capturePayload(intent)
+    }
+
+    /**
+     * App 已在前台/后台时被原生通知唤起（singleTop）→ 从这里拿 payload。
+     *
+     * 第二通道（GuardAlarm）发的通知不是 flutter_local_notifications 发的，
+     * 它的点击不会走 fln 的 getNotificationAppLaunchDetails，只能靠 Intent。
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        capturePayload(intent)
+        // 让 Dart 侧知道有新 payload 可取（Dart 收到后自行 push 响铃页）
+        try {
+            channel?.invokeMethod("ringingPayload", null)
+        } catch (_: Exception) {}
+    }
+
+    private fun capturePayload(intent: Intent?) {
+        val p = intent?.getStringExtra(EXTRA_PAYLOAD)
+        if (!p.isNullOrEmpty()) {
+            pendingPayload = p
         }
     }
 }

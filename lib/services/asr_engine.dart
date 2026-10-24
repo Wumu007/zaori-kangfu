@@ -181,27 +181,45 @@ class SystemAsrEngine implements AsrEngine {
   /// 或抛异常，基本就是没有可用的识别服务。
   Future<String?> _resolveChineseLocale() async {
     final AppLog diag = AppLog.instance;
+    // ═══════════════════════════════════════════════════════════════
+    // V1.7.0 关键修复：locales() 在这台 iQOO 上**永不返回**
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 用户 V1.6.0 日志里的决定性证据：
+    //   [VOICE] 路径A 插件初始化 | 成功
+    //   （然后永远没有下一条 —— 连「listen 已下发」都没有）
+    // 说明 start() 卡在 locales() 这个 await 上，整个语音流程死在这里，
+    // 连后面的「系统对话框」兜底都没机会执行。
+    //
+    // 修复：1.5 秒超时；超时或拿不到列表时**直接用默认 zh-CN 继续**，
+    // 绝不再返回 null（返回 null 会让整条路径提前失败）。
+    List<LocaleName> locales = <LocaleName>[];
     try {
-      final locales = await _speech.locales();
-      final String names =
-          locales.take(10).map((l) => l.localeId).join(', ');
-      diag.voice('可用语音语言', locales.isEmpty ? '（空）' : names);
-      if (locales.isEmpty) return null;
-      for (final l in locales) {
-        final low = l.localeId.toLowerCase().replaceAll('_', '-');
-        if (low == 'zh-cn' || low == 'zh-hans-cn' || low == 'cmn-hans-cn') {
-          return l.localeId;
-        }
-      }
-      for (final l in locales) {
-        if (l.localeId.toLowerCase().startsWith('zh')) return l.localeId;
-      }
-      diag.voice('无中文语言', '共 ${locales.length} 种，见上一条');
-      return null;
+      locales = await _speech
+          .locales()
+          .timeout(const Duration(milliseconds: 1500), onTimeout: () {
+        diag.voice('locales 超时', '1.5 秒未返回，按 zh-CN 继续');
+        return <LocaleName>[];
+      });
     } catch (e) {
       diag.voice('locales 查询异常', '$e');
-      return null;
     }
+
+    final String names = locales.take(10).map((l) => l.localeId).join(', ');
+    diag.voice('可用语音语言', locales.isEmpty ? '（未知，用默认）' : names);
+    if (locales.isEmpty) return 'zh-CN';
+
+    for (final l in locales) {
+      final low = l.localeId.toLowerCase().replaceAll('_', '-');
+      if (low == 'zh-cn' || low == 'zh-hans-cn' || low == 'cmn-hans-cn') {
+        return l.localeId;
+      }
+    }
+    for (final l in locales) {
+      if (l.localeId.toLowerCase().startsWith('zh')) return l.localeId;
+    }
+    diag.voice('无中文语言', '共 ${locales.length} 种，改用 zh-CN 试');
+    return 'zh-CN';
   }
 
   @override
@@ -240,6 +258,8 @@ class SystemAsrEngine implements AsrEngine {
     }
 
     try {
+      // listen 也可能卡住（插件内部 handler.post 后不回调），
+      // 3 秒超时后让上层切下一条路径
       await _speech.listen(
         onResult: (SpeechRecognitionResult result) {
           final text = result.recognizedWords;
@@ -268,7 +288,9 @@ class SystemAsrEngine implements AsrEngine {
           // 「氨氯地平」被听成「安绿地平」是最高频的错误来源，给几个高频词做锚点。
           contextualPhrases: _drugVocabulary,
         ),
-      );
+      ).timeout(const Duration(seconds: 3), onTimeout: () {
+        AppLog.instance.voice('listen 调用超时', '3 秒未返回，交给下一条路径');
+      });
     } catch (e) {
       // listen() 在未初始化 / 平台异常时会抛，上层需要知道，不能静默
       onError?.call('$e', AsrFailure.other);
