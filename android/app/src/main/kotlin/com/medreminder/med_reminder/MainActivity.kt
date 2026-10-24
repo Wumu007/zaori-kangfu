@@ -366,7 +366,7 @@ class MainActivity : FlutterActivity() {
                         OnlineRecorder.record(
                             this,
                             onEvent = { ev -> emitAsr("online_$ev", "", 0) },
-                            onDone = { pcm, ms, hasSpeech ->
+                            onDone = { pcm, ms, hasSpeech, peak ->
                                 runOnUiThread {
                                     try {
                                         channel?.invokeMethod(
@@ -375,6 +375,7 @@ class MainActivity : FlutterActivity() {
                                                 "pcm" to pcm,
                                                 "ms" to ms,
                                                 "hasSpeech" to hasSpeech,
+                                                "peak" to peak,
                                             ),
                                         )
                                     } catch (_: Exception) {}

@@ -99,6 +99,9 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   /// 混进识别文字会被当成结果填进表单（V1.9.0 就踩过这个坑）。
   String _voiceStatus = '';
 
+  /// 「说完了」是否已点过（防止连点重复结束）
+  bool _stopSent = false;
+
   /// 此刻屏幕上应该显示的识别内容 = 已确认部分 + 正在说的部分
   String get _liveText => _finalBuf + _partial;
 
@@ -187,6 +190,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
       _voiceError = '';
       _micBlocked = false;
       _voiceStatus = '正在准备语音模型…';
+      _stopSent = false;
     });
 
     // 麦克风权限在第一次点语音时才申请（不在启动时打扰）
@@ -260,19 +264,28 @@ class _MedicationEditPageState extends State<MedicationEditPage>
     }
   }
 
+  /// 「说完了」：只负责提前结束录音，**不要在这里自己判定有没有文字**
+  ///
+  /// V1.12.0 修复「点了说完了没反应」：
+  /// 在线识别是「录音 → 上传 → 返回文字」三段，点按钮时录音才刚结束、
+  /// 文字还没回来。旧实现在这里立刻读 `_liveText`（必然是空的）→ 走
+  /// 「没听到声音」分支把 `_listening` 置 false；等真正的结果回来时，
+  /// onStopped 里 `!_listening` 的守卫直接 return，文字被丢掉。
+  /// 表现就是：按钮点了，界面一点反应都没有。
   Future<void> _stopAndParse() async {
+    if (_stopSent) return;
+    _stopSent = true;
+    if (mounted) setState(() => _voiceStatus = '正在识别…');
     await _voice.stop();
-    if (!mounted) return;
-    final String text = _liveText.trim();
-    if (text.isEmpty) {
-      setState(() {
-        _listening = false;
-        _voiceError = '没听到声音，再说一次，或者直接用下面的键盘填写';
-      });
-      return;
-    }
-    setState(() => _listening = false);
-    _finishWithText(text);
+
+    // 兜底：8 秒还没结果就退出收音态，不能让界面一直挂着
+    await Future<void>.delayed(const Duration(seconds: 8));
+    if (!mounted || !_listening) return;
+    setState(() {
+      _listening = false;
+      _voiceStatus = '';
+      _voiceError = '识别没有返回结果，请再试一次';
+    });
   }
 
   /// 识别完成：文本放进可编辑结果框，自动解析填入表单
@@ -308,6 +321,15 @@ class _MedicationEditPageState extends State<MedicationEditPage>
           ..clear()
           ..addAll(d.times);
         _syncFrequencyByTimes();
+      }
+      // V1.12.0：「每周一三五」这类说法直接落到「每周」周期上
+      if (d.repeat == RepeatType.weekly && d.weekdays.isNotEmpty) {
+        _repeat = RepeatType.weekly;
+        _weekdays
+          ..clear()
+          ..addAll(d.weekdays);
+      } else if (d.repeat == RepeatType.daily) {
+        _repeat = RepeatType.daily;
       }
       if (d.timingNote != null) _note = d.timingNote;
 
@@ -711,6 +733,9 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                   // 识别结果框：结束收音后出现，文字可改，改完重新填入
                   if (_showResult) _resultCard(),
                   if (!_listening && !_showResult) _voiceEntryCard(),
+                  // V1.12.0：录入方式与说话示例直接摆在输入框下面 ——
+                  // 老人不需要记「该怎么说」，照着念就行
+                  if (!_listening) _voiceHowTo(),
                   // 没有语音服务时上面那张卡已经把话说清楚了，不再叠一行红字
                   if (_voiceError.isNotEmpty && !_voiceFatal)
                     Padding(
@@ -936,6 +961,83 @@ class _MedicationEditPageState extends State<MedicationEditPage>
             const Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.primary),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 输入框下方的「怎么说」提示
+  ///
+  /// 位置很关键：老人不会去翻帮助页，提示必须摆在他准备说话的地方。
+  /// 这里写的是**能直接照着念的整句**，不是「请描述用药方案」这类空话。
+  Widget _voiceHowTo() {
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.fromLTRB(14, 11, 14, 12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: const <Widget>[
+              Icon(Icons.record_voice_over_rounded,
+                  size: 15, color: AppColors.muted),
+              SizedBox(width: 6),
+              Text(
+                '怎么说（照着念就行）',
+                style: TextStyle(
+                  fontSize: AppText.tiny,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.sub,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          _howToLine('每天吃', '醋酸泼尼松 1 片，每天早八点'),
+          _howToLine('每周吃', '这个药 1 片，每周一三五早上八点'),
+          _howToLine('按次说', '每天三次，每次一片，饭后'),
+          const SizedBox(height: 7),
+          const Text(
+            '说完停顿一下会自动结束，不用点按钮；识别错了可以点「说完了」，'
+            '识别结果里每个字都能手动改。',
+            style: TextStyle(
+              fontSize: AppText.tiny,
+              height: 1.5,
+              color: AppColors.muted,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _howToLine(String label, String example) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          SizedBox(
+            width: 50,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              example,
+              style: const TextStyle(
+                fontSize: AppText.tiny,
+                height: 1.45,
+                color: AppColors.sub,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

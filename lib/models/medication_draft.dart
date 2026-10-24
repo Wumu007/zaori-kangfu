@@ -16,6 +16,12 @@ class MedicationDraft {
   String? dosageUnit;
   FrequencyType frequency = FrequencyType.once;
 
+  /// 重复周期（V1.12.0：语音也能说「每周一三五」）
+  RepeatType repeat = RepeatType.daily;
+
+  /// 每周服药的星期号（ISO：1=周一 … 7=周日），仅 weekly 有效
+  final List<int> weekdays = <int>[];
+
   /// 解析出的每日时间点 'HH:mm'
   final List<String> times = <String>[];
   String? timingNote;
@@ -55,7 +61,16 @@ class MedicationDraft {
     b.write(hasName ? name! : '药名没听清');
     b.write('，每次 ');
     b.write(hasDosage ? '${_fmtNum(dosageValue!)}${_unitForSpeech(dosageUnit!)}' : '剂量没听清');
-    if (hasTimes) {
+    if (repeat == RepeatType.weekly && weekdays.isNotEmpty) {
+      b.write('，每周');
+      b.write(weekdays.map((int w) => kWeekdayNames[w - 1]).join('、'));
+      if (hasTimes) {
+        b.write('，');
+        b.write(_speakTimes(times));
+      } else {
+        b.write('，时间没听清');
+      }
+    } else if (hasTimes) {
       b.write('，');
       b.write(_speakTimes(times));
     } else {
@@ -82,6 +97,8 @@ class MedicationDraft {
       dosageUnit: dosageUnit!,
       frequency: FrequencyType.infer(sorted.length),
       times: sorted,
+      repeat: repeat,
+      weekdays: repeat == RepeatType.weekly ? List<int>.from(weekdays) : null,
       note: note ?? timingNote,
       startDate: startDate,
       endDate: endDate,

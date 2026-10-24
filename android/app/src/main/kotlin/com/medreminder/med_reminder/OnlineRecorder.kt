@@ -27,17 +27,24 @@ object OnlineRecorder {
 
     private const val SAMPLE_RATE = 16000
 
-    /** 判定「有人在说话」的能量阈值（16bit PCM 的 RMS） */
-    private const val SPEECH_RMS = 1100.0
+    /**
+     * 判定「有人在说话」的能量阈值（16bit PCM 的 RMS）
+     *
+     * V1.12.0 从 1100 降到 380，并改为**自适应**（见 noiseFloor）：
+     * 用户日志里 11 次尝试有 8 次是「在线录音没听到人声 | 192512 字节」——
+     * 录满 6 秒却没判定出人声。1100 对这台机器的麦克风增益来说太高了，
+     * 而固定阈值在不同机型/不同距离下必然有一头不准。
+     */
+    private const val SPEECH_RMS_MIN = 380.0
 
-    /** 说完之后的静音判定 */
-    private const val SILENCE_MS = 1200L
+    /** 说完之后的静音判定：1.2 秒太急，老人一句话中间会换气 */
+    private const val SILENCE_MS = 2500L
 
     /** 一句都没说出来时的兜底时长 */
-    private const val NO_SPEECH_MS = 6000L
+    private const val NO_SPEECH_MS = 10000L
 
-    /** 单次录音上限 */
-    private const val MAX_MS = 15000L
+    /** 单次录音上限（一句话识别上限 60 秒，我们不需要那么长） */
+    private const val MAX_MS = 20000L
 
     @Volatile private var running = false
     private var thread: Thread? = null
@@ -56,13 +63,13 @@ object OnlineRecorder {
      * 录一句。
      *
      * @param onEvent 过程事件：listening / speech / silence（用于 UI 提示）
-     * @param onDone  录完回调：(PCM 字节, 毫秒, 是否检测到人声)
+     * @param onDone  录完回调：(PCM 字节, 毫秒, 是否检测到人声, 峰值 RMS)
      */
     @JvmStatic
     fun record(
         context: Context,
         onEvent: (String) -> Unit,
-        onDone: (ByteArray, Int, Boolean) -> Unit,
+        onDone: (ByteArray, Int, Boolean, Double) -> Unit,
         onError: (String) -> Unit,
     ) {
         if (running) {
@@ -100,6 +107,12 @@ object OnlineRecorder {
                 val startedAt = System.currentTimeMillis()
                 var lastVoiceAt = startedAt
                 var hasSpeech = false
+                var peak = 0.0
+
+                // 环境本底噪声：用开头 600ms 的均值估计，阈值 = 本底 × 2.2
+                // （下限 380），这样安静房间和嘈杂环境都能用同一套逻辑
+                var noiseSum = 0.0
+                var noiseCount = 0
 
                 while (running && !Thread.currentThread().isInterrupted) {
                     val n = ar.read(buffer, 0, buffer.size)
@@ -111,7 +124,18 @@ object OnlineRecorder {
                     out.write(buffer, 0, n)
 
                     val now = System.currentTimeMillis()
-                    if (rms(buffer, n) > SPEECH_RMS) {
+                    val total = now - startedAt
+                    val level = rms(buffer, n)
+                    if (level > peak) peak = level
+
+                    if (!hasSpeech && total < 600) {
+                        noiseSum += level
+                        noiseCount++
+                    }
+                    val floor = if (noiseCount > 0) noiseSum / noiseCount else 0.0
+                    val threshold = maxOf(SPEECH_RMS_MIN, floor * 2.2)
+
+                    if (level > threshold) {
                         lastVoiceAt = now
                         if (!hasSpeech) {
                             hasSpeech = true
@@ -119,7 +143,6 @@ object OnlineRecorder {
                         }
                     }
 
-                    val total = now - startedAt
                     val silent = now - lastVoiceAt
                     if (hasSpeech && silent > SILENCE_MS) {
                         onEvent("silence")
@@ -134,7 +157,7 @@ object OnlineRecorder {
                 // 先落 running 再回调：Dart 收到 onDone 后可能立刻发起
                 // 下一次录音（回落离线），此时不能还被判成「正在录音」
                 running = false
-                onDone(bytes, ms, hasSpeech)
+                onDone(bytes, ms, hasSpeech, peak)
             } catch (e: Throwable) {
                 onError("录音出错 ${e.javaClass.simpleName}: ${e.message}")
             } finally {

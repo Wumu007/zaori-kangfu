@@ -335,14 +335,21 @@ class VoiceInputService {
       logx.voice('在线录音出错', cap.error!);
       return _OnlineOutcome(failure: cap.error, networkProblem: true);
     }
-    if (!cap.hasSpeech || cap.pcm == null || cap.pcm!.length < 3200) {
-      // 没检测到人声：不算引擎故障，按「没听清」处理（回落离线也听不到）
-      logx.voice('在线录音没听到人声', '${cap.pcm?.length ?? 0} 字节');
+    // V1.12.0：**不再「因为没检测到人声就丢弃录音」**。
+    // 本地 VAD 只是在猜；猜错了直接把整段扔掉，用户看到的就是
+    // 「说完了没反应」（日志里 11 次有 8 次死在这里）。
+    // 现在只要录到有声音频就发给腾讯云，由真正干活的模型决定听没听到；
+    // 静音/噪声最多浪费一次免费额度，但成功率高得多。
+    if (cap.pcm == null || cap.pcm!.length < 3200) {
+      logx.voice('在线录音太短', '${cap.pcm?.length ?? 0} 字节，未上传');
       return const _OnlineOutcome();
     }
 
     final int ms = cap.pcm!.length ~/ 32;
-    logx.voice('在线录音完成', '$ms 毫秒');
+    logx.voice(
+      '在线录音完成',
+      '$ms 毫秒 / 峰值 ${cap.peak.toStringAsFixed(0)} / 人声=${cap.hasSpeech}',
+    );
     onStatus?.call('正在识别…');
 
     final AsrOnlineResult r = await TencentAsr.recognize(cap.pcm!);

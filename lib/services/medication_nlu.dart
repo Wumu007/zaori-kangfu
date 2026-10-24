@@ -98,6 +98,21 @@ class MedicationNlu {
     '饭前', '饭后', '餐前', '餐后', '随餐', '空腹', '睡前', '早上空腹', '餐中',
   };
 
+  /// 星期字样 → ISO 星期号（1=周一 … 7=周日）。
+  ///
+  /// 在**原始文本**上匹配：`_normalize` 会把「一三五」这类中文数字
+  /// 合并成一个数字（135），星期几就再也还原不出来了。
+  static const Map<String, int> _weekdayChar = <String, int>{
+    '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+    '五': 5, '六': 6, '日': 7, '天': 7,
+    '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+  };
+
+  /// 紧跟数字后面时表示「数量」而不是「星期几」的字
+  static const Set<String> _countUnits = <String>{
+    '片', '粒', '颗', '丸', '袋', '包', '支', '瓶', '滴', '喷', '次', '顿',
+  };
+
   static final String _unitPat = _unitTokens.join('|');
   static final String _periodPat = _periods.join('|');
 
@@ -138,7 +153,41 @@ class MedicationNlu {
       }
     }
 
-    // 2) 每日 N 次
+    // 2) 每周：星期几 / 每周 N 次（V1.12.0）
+    //
+    //    支持的说法：
+    //      「每周一三五早上八点」「每星期二、四 晚上八点」「每周日」
+    //      「每周三次」「每周两片」（总量说法，按每周 N 次拟）
+    final _WeeklyHint? weekly = _parseWeekly(raw);
+    if (weekly != null) {
+      draft.repeat = RepeatType.weekly;
+      draft.weekdays
+        ..clear()
+        ..addAll(weekly.weekdays);
+      draft.fieldConfidence['repeat'] = weekly.exact ? 0.9 : 0.6;
+
+      if (weekly.count != null) {
+        final String days = weekly.weekdays
+            .map((int w) => kWeekdayNames[w - 1])
+            .join('、');
+        draft.uncertainFields.add('weekdays');
+        draft.issues.add('听到「每周 ${weekly.count} 次」的说法，'
+            '已按每周$days各一次安排，请确认');
+        // 「每周三片」里的 3 是总量而不是每次剂量，按每次 1 片拟并标黄
+        if (draft.dosageValue == null) {
+          draft.dosageValue = 1;
+          draft.dosageUnit = '片';
+          draft.uncertainFields.add('dosage');
+        }
+        // 把「每周3片」整段摘掉，别让剂量解析再抓一次「3片」
+        work = work.replaceAll(
+            RegExp('每\\s*(?:周|星期|礼拜)\\s*\\d+\\s*($_unitPat)'), ' ');
+      }
+      // 摘掉「每周」，避免影响后面的药名猜测
+      work = work.replaceAll(RegExp('每\\s*(?:周|星期|礼拜)'), ' ');
+    }
+
+    // 3) 每日 N 次
     int? timesPerDay;
     final mCount = _reTimesPerDay.firstMatch(work);
     if (mCount != null) {
@@ -289,6 +338,70 @@ class MedicationNlu {
 
     draft.frequency = FrequencyType.infer(draft.times.length);
     return draft;
+  }
+
+  // ---------------------------------------------------------------- 每周
+
+  /// 解析「每周…」描述。返回 null 表示这句话不是按周服用的。
+  static _WeeklyHint? _parseWeekly(String raw) {
+    final Match? head = RegExp('每\\s*(?:周|星期|礼拜)').firstMatch(raw);
+    if (head == null) return null;
+
+    final String rest = raw.substring(head.end);
+    final List<int> days = <int>[];
+    int? count;
+    int i = 0;
+
+    while (i < rest.length) {
+      final String ch = rest[i];
+      final int? wd = _weekdayChar[ch];
+      if (wd != null) {
+        final String? next = i + 1 < rest.length ? rest[i + 1] : null;
+        // 「每周三片」「每周三次」：后面紧跟单位 → 这是数量，不是星期三
+        if (next != null && _countUnits.contains(next)) {
+          count = wd;
+          break;
+        }
+        days.add(wd);
+        i++;
+        continue;
+      }
+      // 分隔符继续往后读（「每周一、三、五」）
+      if (ch == ' ' || ch == '、' || ch == '和' || ch == '及' || ch == '与') {
+        i++;
+        continue;
+      }
+      break;
+    }
+
+    if (days.isEmpty && count == null) return null;
+
+    if (days.isEmpty) {
+      // 「每周 N 次」：均匀摊到一周（周一/周三/周五…）
+      return _WeeklyHint(
+        weekdays: _spreadWeekdays(count!),
+        count: count,
+      );
+    }
+
+    final List<int> uniq = <int>[];
+    for (final int d in days) {
+      if (!uniq.contains(d)) uniq.add(d);
+    }
+    uniq.sort();
+    return _WeeklyHint(weekdays: uniq);
+  }
+
+  /// 把「每周 N 次」均匀摊到一周
+  static List<int> _spreadWeekdays(int n) {
+    final int cnt = n.clamp(1, 7);
+    if (cnt == 1) return <int>[DateTime.monday];
+    final List<int> out = <int>[];
+    for (int i = 0; i < cnt; i++) {
+      final int w = (i * 7 ~/ cnt) + 1;
+      if (!out.contains(w)) out.add(w);
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- 工具
@@ -477,4 +590,18 @@ class MedicationNlu {
     }
     return result + current;
   }
+}
+
+/// 「每周…」的解析结果
+class _WeeklyHint {
+  const _WeeklyHint({required this.weekdays, this.count});
+
+  /// 星期号（ISO 1..7），已去重排序
+  final List<int> weekdays;
+
+  /// 非空表示听到的是「每周 N 次」这种总量说法，需要标黄确认
+  final int? count;
+
+  /// 星期几是明确说出来的（而不是从次数推出来的）
+  bool get exact => count == null;
 }

@@ -27,7 +27,12 @@ class NativeAsrEvent {
 
 /// 原生录到的一段音频（在线识别用）
 class CapturedAudio {
-  const CapturedAudio({this.pcm, this.hasSpeech = false, this.error});
+  const CapturedAudio({
+    this.pcm,
+    this.hasSpeech = false,
+    this.error,
+    this.peak = 0,
+  });
 
   /// 16k / 单声道 / 16bit PCM
   final Uint8List? pcm;
@@ -37,6 +42,9 @@ class CapturedAudio {
 
   /// 录音失败原因
   final String? error;
+
+  /// 本次录音的峰值能量（16bit RMS）——排查「麦克风没收到声」时最关键的数字
+  final double peak;
 
   bool get isEmpty => error != null || pcm == null || pcm!.isEmpty;
 }
@@ -118,6 +126,7 @@ class NativeBridge {
           pcm: pcm,
           hasSpeech: (a['hasSpeech'] as bool?) ?? false,
           error: a['error'] as String?,
+          peak: (a['peak'] as num?)?.toDouble() ?? 0,
         ));
         return null;
       }

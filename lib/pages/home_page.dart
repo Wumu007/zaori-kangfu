@@ -343,16 +343,26 @@ class _SlotTile extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 13, 12, 13),
         child: Row(
           children: <Widget>[
+            // V1.12.0：时间列原来固定 44 宽，开了「大字号」后
+            // 「07:50」放不下会折成「07:5 / 0」，非常难看。
+            // 现在：宽度给到 52，并且用 FittedBox 兜底 —— 极端情况下
+            // 只会略微缩小，绝不会换行。
             SizedBox(
-              width: 44,
-              child: Text(
-                slot.hm,
-                style: TextStyle(
-                  fontSize: AppText.bodySm,
-                  fontWeight: FontWeight.w600,
-                  // 数字等宽，时间列不会左右跳
-                  fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
-                  color: taken ? AppColors.faint : AppColors.ink,
+              width: 52,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  slot.hm,
+                  maxLines: 1,
+                  softWrap: false,
+                  style: TextStyle(
+                    fontSize: AppText.bodySm,
+                    fontWeight: FontWeight.w600,
+                    // 数字等宽，时间列不会左右跳
+                    fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+                    color: taken ? AppColors.faint : AppColors.ink,
+                  ),
                 ),
               ),
             ),
