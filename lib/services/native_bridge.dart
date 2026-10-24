@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
@@ -22,6 +23,22 @@ class NativeAsrEvent {
   bool get isPartial => type == 'partial';
   bool get isError => type == 'error';
   bool get isEnd => type == 'endOfSpeech';
+}
+
+/// 原生录到的一段音频（在线识别用）
+class CapturedAudio {
+  const CapturedAudio({this.pcm, this.hasSpeech = false, this.error});
+
+  /// 16k / 单声道 / 16bit PCM
+  final Uint8List? pcm;
+
+  /// 是否检测到人声（false 说明用户没开口）
+  final bool hasSpeech;
+
+  /// 录音失败原因
+  final String? error;
+
+  bool get isEmpty => error != null || pcm == null || pcm!.isEmpty;
 }
 
 /// 原生侧能力桥：MethodChannel `med_reminder/native`
@@ -65,6 +82,9 @@ class NativeBridge {
 
   static bool _handlerBound = false;
 
+  /// 正在等待的那次录音（原生录完会回调 onlineAudio）
+  static Completer<CapturedAudio>? _pendingCapture;
+
   /// 原生识别事件流（ready / partial / result / error / endOfSpeech）
   static Stream<NativeAsrEvent> get asrEvents => _asrCtrl.stream;
 
@@ -79,6 +99,26 @@ class NativeBridge {
     _ch.setMethodCallHandler((MethodCall call) async {
       if (call.method == 'ringingPayload') {
         _ringingCtrl.add(null);
+        return null;
+      }
+      if (call.method == 'onlineAudio') {
+        final Map<Object?, Object?> a =
+            (call.arguments as Map<Object?, Object?>?) ??
+                const <Object?, Object?>{};
+        final Object? rawPcm = a['pcm'];
+        Uint8List? pcm;
+        if (rawPcm is Uint8List) {
+          pcm = rawPcm;
+        } else if (rawPcm is List<int>) {
+          pcm = Uint8List.fromList(rawPcm);
+        }
+        final Completer<CapturedAudio>? pending = _pendingCapture;
+        _pendingCapture = null;
+        pending?.complete(CapturedAudio(
+          pcm: pcm,
+          hasSpeech: (a['hasSpeech'] as bool?) ?? false,
+          error: a['error'] as String?,
+        ));
         return null;
       }
       if (call.method != 'asrEvent') return null;
@@ -124,6 +164,52 @@ class NativeBridge {
     if (!supported) return;
     try {
       await _ch.invokeMethod<void>('stopNativeAsr');
+    } catch (_) {}
+  }
+
+  // ------------------------------------------------ 在线识别：录一句
+
+  /// 录一句 16k PCM 交给上层上传。
+  ///
+  /// 原生侧自带断句：检测到人声后安静 1.2 秒即结束；一直没开口则 6 秒
+  /// 自动结束；最长 15 秒。所以这个方法会「阻塞到用户说完」，调用方
+  /// 不需要自己计时。
+  ///
+  /// 返回 null 表示平台不支持或原生拒绝启动。
+  static Future<CapturedAudio?> recordUtterance({
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    if (!supported) return null;
+    bindAsrHandler();
+    if (_pendingCapture != null) return null;
+
+    final Completer<CapturedAudio> c = Completer<CapturedAudio>();
+    _pendingCapture = c;
+    final bool started =
+        await _ch.invokeMethod<bool>('startOnlineRecord') ?? false;
+    if (!started) {
+      _pendingCapture = null;
+      return null;
+    }
+
+    try {
+      return await c.future.timeout(
+        timeout,
+        onTimeout: () {
+          unawaited(stopOnlineRecord());
+          return const CapturedAudio(error: '录音超时');
+        },
+      );
+    } finally {
+      if (identical(_pendingCapture, c)) _pendingCapture = null;
+    }
+  }
+
+  /// 提前结束录音（用户点「说完了」）
+  static Future<void> stopOnlineRecord() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('stopOnlineRecord');
     } catch (_) {}
   }
 

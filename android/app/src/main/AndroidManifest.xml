@@ -19,6 +19,10 @@
     <!-- 语音录入收音 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- V1.11.0：在线语音识别（腾讯云一句话识别）需要联网。
+         离线识别不依赖它；用户不开在线开关时，App 依然完全不联网。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- 导出文件写入（Android 10 及以下需要；11+ 走系统「保存到」不再需要，
          但部分 ROM 的文件选择器仍会按旧路径落盘，声明上以兼容） -->
     <uses-permission

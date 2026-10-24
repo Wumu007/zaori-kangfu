@@ -6,9 +6,11 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../models/medication_draft.dart';
 import 'app_log.dart';
+import 'app_settings.dart';
 import 'asr_engine.dart';
 import 'medication_nlu.dart';
 import 'native_bridge.dart';
+import 'tencent_asr.dart';
 
 // 页面只依赖编排层，不该再单独 import 引擎实现；
 // 把失败类型枚举透出去，页面才写得出 `kind == AsrFailure.noEngine`
@@ -23,6 +25,7 @@ enum MicGate { ok, denied, permanentlyDenied }
 /// 收音走的三条路径（日志里用来定位「到底哪条通了」）
 class VoicePath {
   VoicePath._();
+  static const String online = 'N-在线识别';
   static const String offline = 'O-离线模型';
   static const String native = 'B-原生识别器';
   static const String plugin = 'A-插件';
@@ -35,6 +38,20 @@ class VoicePath {
 /// - `text` 为空 + `failure` 为空 = 用户没说话 / 没听清 → 提示重说；
 /// - `failure` 非空 = 引擎本身不可用（模型解压失败、麦克风被占）→
 ///   必须说清原因，否则用户会一直对着手机重复说话。
+/// 在线路径的结果
+///
+/// 与离线那边一样要区分「没听到」和「引擎不可用」：
+/// - text 有值 → 成功；
+/// - failure 非空 + networkProblem=false → 密钥/开通/额度问题，回落也没用；
+/// - failure 非空 + networkProblem=true → 网络/麦克风问题，可以回落离线。
+class _OnlineOutcome {
+  const _OnlineOutcome({this.text, this.failure, this.networkProblem = false});
+
+  final String? text;
+  final String? failure;
+  final bool networkProblem;
+}
+
 class _OfflineOutcome {
   const _OfflineOutcome({this.text, this.failure});
 
@@ -159,6 +176,57 @@ class VoiceInputService {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // 路径 N：在线识别（V1.11.0，用户在设置页配置密钥后启用）
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 腾讯云的一句话识别 = 微信语音转文字同一套服务，对药名的准确率
+    // 明显高于本地小模型。默认关闭，只有用户自己填了密钥并打开才走。
+    //
+    // 失败分两类处理：
+    // - 密钥/开通/额度问题 → 直接说清原因（回落也没用，别让用户白说）；
+    // - 网络/麦克风问题 → 回落本地离线识别，并提示「请再说一次」。
+    final AppSettings cfg = AppSettings.instance;
+    if (cfg.asrOnlineReady) {
+      final _OnlineOutcome on = await _tryOnlinePath(
+        onStatus: onStatus,
+        onPartial: onPartial,
+      );
+      if (on.text != null && on.text!.trim().isNotEmpty) {
+        logx.voice('成功路径', VoicePath.online);
+        onFinal(on.text!.trim());
+        onStopped?.call();
+        return true;
+      }
+      // 在线确实听完了、但没内容（没说话 / 没识别出字）：
+      // 不能再往下回落 —— 那会立刻又开一次录音，用户会觉得莫名其妙。
+      if (on.failure == null) {
+        logx.voice('在线没拿到内容', '按没听清处理');
+        const String msg = '没有听清。靠近一点、说慢一点再试一次，'
+            '比如「氨氯地平一片，每天早八点」。';
+        onError(msg);
+        onFailure?.call(AsrFailure.heardNothing, msg);
+        onStopped?.call();
+        return false;
+      }
+
+      // 密钥 / 开通 / 额度问题：回落也没用，直接说清原因
+      if (!on.networkProblem) {
+        logx.voice('在线识别不可用', on.failure!);
+        onError(on.failure!);
+        onFailure?.call(AsrFailure.noEngine, on.failure!);
+        onStopped?.call();
+        return false;
+      }
+
+      // 网络或麦克风问题 → 回落本地离线识别
+      logx.voice('在线失败，回落本地', on.failure ?? '未知原因');
+      onStatus?.call('网络没通，改用本地识别…');
+      // 原生刚释放 AudioRecord，给系统一点时间再开第二次录音，
+      // 否则偶发「麦克风打不开」
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // 路径 O：离线模型（V1.9.0 起的主路径）
     // ═══════════════════════════════════════════════════════════════
     //
@@ -238,6 +306,55 @@ class VoiceInputService {
     onFailure?.call(AsrFailure.noEngine, msg);
     onStopped?.call();
     return false;
+  }
+
+  // ------------------------------------------------------------ 路径 N
+
+  /// 在线识别：录一句 → 上传腾讯云 → 拿文字
+  ///
+  /// 录音与断句都在原生侧完成（有声才录、安静 1.2 秒即结束），
+  /// 这里只负责等待与上传，所以整段耗时 = 说话时长 + 约 0.5 秒。
+  Future<_OnlineOutcome> _tryOnlinePath({
+    void Function(String status)? onStatus,
+    void Function(String partialText)? onPartial,
+  }) async {
+    final AppLog logx = AppLog.instance;
+    if (!Platform.isAndroid) return const _OnlineOutcome();
+
+    onStatus?.call('请说话…');
+    final CapturedAudio? cap = await NativeBridge.recordUtterance();
+
+    if (cap == null) {
+      logx.voice('在线录音没启动');
+      return const _OnlineOutcome(
+        failure: '麦克风没能启动',
+        networkProblem: true,
+      );
+    }
+    if (cap.error != null) {
+      logx.voice('在线录音出错', cap.error!);
+      return _OnlineOutcome(failure: cap.error, networkProblem: true);
+    }
+    if (!cap.hasSpeech || cap.pcm == null || cap.pcm!.length < 3200) {
+      // 没检测到人声：不算引擎故障，按「没听清」处理（回落离线也听不到）
+      logx.voice('在线录音没听到人声', '${cap.pcm?.length ?? 0} 字节');
+      return const _OnlineOutcome();
+    }
+
+    final int ms = cap.pcm!.length ~/ 32;
+    logx.voice('在线录音完成', '$ms 毫秒');
+    onStatus?.call('正在识别…');
+
+    final AsrOnlineResult r = await TencentAsr.recognize(cap.pcm!);
+    if (r.ok) {
+      logx.voice('在线识别结果', r.text.isEmpty ? '（没听出内容）' : r.text);
+      return _OnlineOutcome(text: r.text);
+    }
+    return _OnlineOutcome(
+      failure: r.error,
+      // 鉴权/开通类问题不算网络问题 —— 回落离线只会让用户白说一遍
+      networkProblem: r.networkProblem && !r.authProblem,
+    );
   }
 
   // ------------------------------------------------------------ 路径 O
@@ -517,12 +634,14 @@ class VoiceInputService {
   // ------------------------------------------------------------ 其它
 
   Future<void> stop() async {
-    // 「说完了」按钮：离线识别要能立刻收尾并返回已有文字
+    // 「说完了」按钮：两条路都要能立刻收尾
+    await NativeBridge.stopOnlineRecord();
     await NativeBridge.stopOfflineAsr();
     await _engine.stop();
   }
 
   Future<void> cancel() async {
+    await NativeBridge.stopOnlineRecord();
     await NativeBridge.stopOfflineAsr();
     await NativeBridge.stopNativeAsr();
     await _engine.cancel();

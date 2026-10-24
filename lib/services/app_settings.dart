@@ -22,11 +22,34 @@ class AppSettings extends ChangeNotifier {
   static const String _kSnooze = 'setting_snooze_minutes';
   static const String _kConfirmSkip = 'setting_confirm_skip';
 
+  // V1.11.0：在线语音识别（腾讯云）—— 用户名下的密钥只存本机
+  static const String _kAsrOnline = 'setting_asr_online';
+  static const String _kAsrSecretId = 'setting_asr_secret_id';
+  static const String _kAsrSecretKey = 'setting_asr_secret_key';
+
   bool _largeText = false;
   int _snoozeMinutes = 10;
   bool _confirmBeforeSkip = true;
 
+  /// 是否启用在线识别（在线优先，失败回落离线）
+  bool _asrOnlineEnabled = false;
+
+  /// 腾讯云密钥：只存本机 SharedPreferences（应用私有目录）。
+  /// 绝不写进代码、绝不进仓库 —— APK 分发出去等于公开密钥。
+  String _asrSecretId = '';
+  String _asrSecretKey = '';
+
   bool get largeText => _largeText;
+
+  bool get asrOnlineEnabled => _asrOnlineEnabled;
+  String get asrSecretId => _asrSecretId;
+  String get asrSecretKey => _asrSecretKey;
+
+  /// 在线识别的两个前提：开关打开 + 密钥填齐
+  bool get asrOnlineReady =>
+      _asrOnlineEnabled &&
+      _asrSecretId.trim().isNotEmpty &&
+      _asrSecretKey.trim().isNotEmpty;
   int get snoozeMinutes => _snoozeMinutes;
   bool get confirmBeforeSkip => _confirmBeforeSkip;
 
@@ -40,6 +63,9 @@ class AppSettings extends ChangeNotifier {
       _largeText = sp.getBool(_kLargeText) ?? false;
       _snoozeMinutes = sp.getInt(_kSnooze) ?? 10;
       _confirmBeforeSkip = sp.getBool(_kConfirmSkip) ?? true;
+      _asrOnlineEnabled = sp.getBool(_kAsrOnline) ?? false;
+      _asrSecretId = sp.getString(_kAsrSecretId) ?? '';
+      _asrSecretKey = sp.getString(_kAsrSecretKey) ?? '';
       notifyListeners();
     } catch (_) {
       // 首次安装或存储不可用时静默降级
@@ -68,6 +94,45 @@ class AppSettings extends ChangeNotifier {
     notifyListeners();
     final SharedPreferences sp = await SharedPreferences.getInstance();
     await sp.setBool(_kConfirmSkip, value);
+  }
+
+  /// 开关在线识别。没有密钥时不允许打开（否则用户会以为开了却没用）。
+  Future<bool> setAsrOnlineEnabled(bool value) async {
+    if (value &&
+        (_asrSecretId.trim().isEmpty || _asrSecretKey.trim().isEmpty)) {
+      return false;
+    }
+    if (_asrOnlineEnabled == value) return true;
+    _asrOnlineEnabled = value;
+    notifyListeners();
+    final SharedPreferences sp = await SharedPreferences.getInstance();
+    await sp.setBool(_kAsrOnline, value);
+    return true;
+  }
+
+  /// 保存腾讯云密钥（用户手动粘贴）
+  Future<void> saveAsrCredentials({
+    required String secretId,
+    required String secretKey,
+  }) async {
+    _asrSecretId = secretId.trim();
+    _asrSecretKey = secretKey.trim();
+    notifyListeners();
+    final SharedPreferences sp = await SharedPreferences.getInstance();
+    await sp.setString(_kAsrSecretId, _asrSecretId);
+    await sp.setString(_kAsrSecretKey, _asrSecretKey);
+  }
+
+  /// 清除密钥，同时关闭在线识别
+  Future<void> clearAsrCredentials() async {
+    _asrSecretId = '';
+    _asrSecretKey = '';
+    _asrOnlineEnabled = false;
+    notifyListeners();
+    final SharedPreferences sp = await SharedPreferences.getInstance();
+    await sp.remove(_kAsrSecretId);
+    await sp.remove(_kAsrSecretKey);
+    await sp.setBool(_kAsrOnline, false);
   }
 }
 

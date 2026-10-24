@@ -361,6 +361,42 @@ class MainActivity : FlutterActivity() {
                         OfflineAsr.stop()
                         result.success(true)
                     }
+                    // ---- 在线识别（腾讯云）：录一句 PCM 交回 Dart ----
+                    "startOnlineRecord" -> {
+                        OnlineRecorder.record(
+                            this,
+                            onEvent = { ev -> emitAsr("online_$ev", "", 0) },
+                            onDone = { pcm, ms, hasSpeech ->
+                                runOnUiThread {
+                                    try {
+                                        channel?.invokeMethod(
+                                            "onlineAudio",
+                                            mapOf(
+                                                "pcm" to pcm,
+                                                "ms" to ms,
+                                                "hasSpeech" to hasSpeech,
+                                            ),
+                                        )
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                            onError = { msg ->
+                                runOnUiThread {
+                                    try {
+                                        channel?.invokeMethod(
+                                            "onlineAudio",
+                                            mapOf("error" to msg),
+                                        )
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                        )
+                        result.success(true)
+                    }
+                    "stopOnlineRecord" -> {
+                        OnlineRecorder.stop()
+                        result.success(true)
+                    }
                     "nativeAsrAvailable" -> result.success(
                         try { SpeechRecognizer.isRecognitionAvailable(this) } catch (e: Exception) { false }
                     )

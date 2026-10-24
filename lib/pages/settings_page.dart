@@ -6,7 +6,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/app_log.dart';
+import '../services/app_settings.dart';
 import '../services/backup_service.dart';
+import '../services/tencent_asr.dart';
 import '../services/native_bridge.dart';
 import '../services/reminder_scheduler.dart';
 import '../state/app_state.dart';
@@ -94,6 +96,46 @@ class SettingsPage extends StatelessWidget {
                           builder: (_) => const MedicationListPage(),
                         ),
                       ),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpace.gapLg),
+
+                  // ---- 分组 1.5：语音识别 ----
+                  //
+                  // V1.11.0：系统语音服务在这台 vivo 上不可用（日志已证实
+                  // `系统语音服务=[]`、`error code=8`），打包进 APK 的离线
+                  // 小模型对药名又不够准。所以提供「在线识别」选项：
+                  // 腾讯云一句话识别（微信同源），默认关闭、密钥由用户自填。
+                  const SectionHeader('语音识别'),
+                  AppCard(
+                    shadow: true,
+                    child: Column(
+                      children: <Widget>[
+                        _ToneSwitchTile(
+                          icon: AppIcons.voice,
+                          tone: state.settings.asrOnlineEnabled
+                              ? AppIconTone.blue
+                              : AppIconTone.gray,
+                          value: state.settings.asrOnlineEnabled,
+                          onChanged: (bool v) => _toggleOnlineAsr(context, v),
+                          title: '在线识别（更准）',
+                          subtitle: state.settings.asrOnlineReady
+                              ? '腾讯云，需要联网；识别结果更接近微信水平'
+                              : '需要先填腾讯云密钥才能打开',
+                        ),
+                        const AppDivider(),
+                        AppNavRow(
+                          icon: AppIcons.settings,
+                          tone: state.settings.asrSecretId.isEmpty
+                              ? AppIconTone.orange
+                              : AppIconTone.green,
+                          title: '腾讯云密钥',
+                          subtitle: state.settings.asrSecretId.isEmpty
+                              ? '未配置 —— 点这里粘贴 SecretId / SecretKey'
+                              : '已配置 ${_maskKey(state.settings.asrSecretId)}',
+                          onTap: () => _openAsrSheet(context),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: AppSpace.gapLg),
@@ -249,7 +291,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.10.0 · 本地版',
+                      '早日康复 v1.11.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -267,6 +309,39 @@ class SettingsPage extends StatelessWidget {
     final AppState state = AppState.instance;
     await state.settings.setSnoozeMinutes(minutes);
     await ReminderScheduler.instance.resync(state.meds);
+  }
+
+  /// 在线识别开关：没有密钥时先引导去填，不静默失败
+  Future<void> _toggleOnlineAsr(BuildContext context, bool value) async {
+    if (!value) {
+      await AppSettings.instance.setAsrOnlineEnabled(false);
+      return;
+    }
+    if (!TencentAsr.configured) {
+      if (context.mounted) {
+        showAppToast(context, '先填腾讯云密钥，再打开在线识别');
+      }
+      await _openAsrSheet(context);
+      return;
+    }
+    await AppSettings.instance.setAsrOnlineEnabled(true);
+  }
+
+  /// 密钥脱敏：AKIDabcd…wxyz
+  static String _maskKey(String id) {
+    final String t = id.trim();
+    if (t.length <= 10) return t;
+    return '${t.substring(0, 6)}…${t.substring(t.length - 4)}';
+  }
+
+  /// 打开腾讯云密钥面板
+  Future<void> _openAsrSheet(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (BuildContext ctx) => const _AsrSheet(),
+    );
   }
 
   /// 打开「运行日志」面板
@@ -1415,6 +1490,345 @@ class _OverlayRowState extends State<_OverlayRow> with WidgetsBindingObserver {
             : '没开的话，切到别的应用只会收到一条通知 —— 点这里允许「显示在其他应用上层」',
         onTap: ok ? null : _request,
         showChevron: !ok,
+      ),
+    );
+  }
+}
+
+
+/// 腾讯云密钥配置面板
+///
+/// ═══════════════════════════════════════════════════════════════════
+/// 几个刻意的设计
+/// ═══════════════════════════════════════════════════════════════════
+///
+/// 1. **不做「保存」就完事**：保存后立刻发一次真实的探测请求，把
+///    「密钥错 / 没开通 / 额度用完」当场翻译成人话 —— 否则用户会以为
+///    配好了，结果一说话就失败，又得回来猜。
+/// 2. **测试通过就自动打开开关**，少一步操作。
+/// 3. **密钥只存本机**（应用私有目录），不上传任何地方；这里也明确
+///    告诉用户，避免他担心。
+class _AsrSheet extends StatefulWidget {
+  const _AsrSheet();
+
+  @override
+  State<_AsrSheet> createState() => _AsrSheetState();
+}
+
+class _AsrSheetState extends State<_AsrSheet> {
+  late final TextEditingController _idCtrl;
+  late final TextEditingController _keyCtrl;
+
+  bool _busy = false;
+  bool _obscure = true;
+  String _status = '';
+  bool _statusOk = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _idCtrl = TextEditingController(text: AppSettings.instance.asrSecretId);
+    _keyCtrl = TextEditingController(text: AppSettings.instance.asrSecretKey);
+  }
+
+  @override
+  void dispose() {
+    _idCtrl.dispose();
+    _keyCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveAndTest() async {
+    final String id = _idCtrl.text.trim();
+    final String key = _keyCtrl.text.trim();
+    if (id.isEmpty || key.isEmpty) {
+      setState(() {
+        _status = 'SecretId 和 SecretKey 都要填';
+        _statusOk = false;
+      });
+      return;
+    }
+    if (!id.startsWith('AKID')) {
+      setState(() {
+        _status = 'SecretId 一般以 AKID 开头，检查有没有粘错或多了空格';
+        _statusOk = false;
+      });
+      return;
+    }
+    await AppSettings.instance
+        .saveAsrCredentials(secretId: id, secretKey: key);
+    if (!mounted) return;
+    await _test();
+  }
+
+  Future<void> _test() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _status = '正在连接腾讯云…';
+      _statusOk = false;
+    });
+    final AsrOnlineResult r = await TencentAsr.testConnection();
+    if (!mounted) return;
+    if (r.ok) {
+      // 连通了就顺手打开开关，省得用户再回上一层点一次
+      await AppSettings.instance.setAsrOnlineEnabled(true);
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = '连接正常，在线识别已打开';
+        _statusOk = true;
+      });
+    } else {
+      setState(() {
+        _busy = false;
+        _status = r.error ?? '连不上，稍后再试';
+        _statusOk = false;
+      });
+    }
+  }
+
+  Future<void> _clear() async {
+    await AppSettings.instance.clearAsrCredentials();
+    if (!mounted) return;
+    setState(() {
+      _idCtrl.clear();
+      _keyCtrl.clear();
+      _status = '已清除，语音将使用本地识别';
+      _statusOk = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color statusColor =
+        _statusOk ? AppColors.success : AppColors.warn;
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: Container(
+        height: MediaQuery.sizeOf(context).height * 0.78,
+        decoration: const BoxDecoration(
+          color: AppColors.bg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: <Widget>[
+              Container(
+                margin: const EdgeInsets.only(top: 10, bottom: 6),
+                width: 38,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.line,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 12, 10),
+                child: Row(
+                  children: <Widget>[
+                    const AppIconTile(
+                      AppIcons.voice,
+                      tone: AppIconTone.blue,
+                      size: 32,
+                    ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            '在线语音识别',
+                            style: TextStyle(
+                              fontSize: AppText.h2,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.ink,
+                            ),
+                          ),
+                          Text(
+                            '腾讯云 · 只存本机，不上传到别处',
+                            style: TextStyle(
+                              fontSize: AppText.tiny,
+                              color: AppColors.muted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('关闭'),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: AppColors.line),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+                  children: <Widget>[
+                    // 说明
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        borderRadius: BorderRadius.circular(AppRadius.card),
+                        border: Border.all(color: AppColors.hairline, width: 0.5),
+                      ),
+                      child: const Text(
+                        '在哪拿这两个值：腾讯云控制台 → 访问管理 → API 密钥管理。\n'
+                        '识别时这段语音会发送到腾讯云，每月前 5000 次免费；'
+                        '不填就继续用手机本地的离线识别。',
+                        style: TextStyle(
+                          fontSize: AppText.tiny,
+                          height: 1.6,
+                          color: AppColors.sub,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    _SubLabel('SecretId'),
+                    const SizedBox(height: 6),
+                    _AsrField(
+                      controller: _idCtrl,
+                      hint: 'AKID 开头，例如 AKIDxxxxxxxxxxxx',
+                      keyboardType: TextInputType.visiblePassword,
+                    ),
+                    const SizedBox(height: 14),
+                    _SubLabel('SecretKey'),
+                    const SizedBox(height: 6),
+                    _AsrField(
+                      controller: _keyCtrl,
+                      hint: '32 位字母数字',
+                      obscure: _obscure,
+                      trailing: IconButton(
+                        onPressed: () => setState(() => _obscure = !_obscure),
+                        icon: Icon(
+                          _obscure
+                              ? Icons.visibility_off_rounded
+                              : Icons.visibility_rounded,
+                          size: 19,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                    ),
+                    if (_status.isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 12),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Icon(
+                            _statusOk
+                                ? Icons.check_circle_rounded
+                                : Icons.error_outline_rounded,
+                            size: 16,
+                            color: statusColor,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              _status,
+                              style: TextStyle(
+                                fontSize: AppText.tiny,
+                                height: 1.5,
+                                color: statusColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 18),
+                    PrimaryButton(
+                      label: _busy ? '正在测试…' : '保存并测试',
+                      onPressed: _busy ? null : _saveAndTest,
+                      height: 46,
+                    ),
+                    const SizedBox(height: 10),
+                    Center(
+                      child: TextButton(
+                        onPressed: _busy ? null : _clear,
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.muted,
+                          textStyle: const TextStyle(fontSize: AppText.tiny),
+                        ),
+                        child: const Text('清除已保存的密钥'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SubLabel extends StatelessWidget {
+  const _SubLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: AppText.caption,
+        fontWeight: FontWeight.w600,
+        color: AppColors.ink,
+      ),
+    );
+  }
+}
+
+class _AsrField extends StatelessWidget {
+  const _AsrField({
+    required this.controller,
+    required this.hint,
+    this.obscure = false,
+    this.trailing,
+    this.keyboardType,
+  });
+
+  final TextEditingController controller;
+  final String hint;
+  final bool obscure;
+  final Widget? trailing;
+  final TextInputType? keyboardType;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      obscureText: obscure,
+      keyboardType: keyboardType,
+      autocorrect: false,
+      enableSuggestions: false,
+      style: const TextStyle(fontSize: AppText.bodySm, color: AppColors.ink),
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: hint,
+        hintStyle: const TextStyle(fontSize: AppText.caption, color: AppColors.faint),
+        suffixIcon: trailing,
+        filled: true,
+        fillColor: AppColors.surface,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.button),
+          borderSide: const BorderSide(color: AppColors.hairline, width: 0.5),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.button),
+          borderSide: const BorderSide(color: AppColors.hairline, width: 0.5),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.button),
+          borderSide: const BorderSide(color: AppColors.primary, width: 1.2),
+        ),
       ),
     );
   }
