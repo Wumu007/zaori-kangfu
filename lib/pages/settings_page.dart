@@ -122,6 +122,10 @@ class SettingsPage extends StatelessWidget {
                   // 通知权限全开也一样收不到。加入电池优化白名单是标准解法。
                   const _BatteryRow(),
                   const SizedBox(height: AppSpace.gap),
+                  // V1.8.0：「显示在其他应用上层」—— 后台/切换应用时能否
+                  // 直接弹出响铃界面的关键。没有它，系统只允许一条通知。
+                  const _OverlayRow(),
+                  const SizedBox(height: AppSpace.gap),
                   // V1.6.0：一键测试 —— 让「后台到底响不响」变成可验证的事，
                   // 而不是每次都等真的吃药时间才发现没响。
                   AppCard(
@@ -245,7 +249,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.7.0 · 本地版',
+                      '早日康复 v1.8.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -1341,5 +1345,77 @@ class _LogSheetState extends State<_LogSheet> {
       if (!mounted) return;
       showAppToast(context, '这台手机没能打开分享，可改用「复制全部」');
     }
+  }
+}
+
+
+/// 「后台弹出提醒界面」行：悬浮窗（显示在其他应用上层）权限
+///
+/// ═══════════════════════════════════════════════════════════════════
+/// 为什么必须有（用户 V1.7.0 实测反馈）
+/// ═══════════════════════════════════════════════════════════════════
+///
+/// 「切到别的应用后只在通知栏出现一条，点了才响」—— 因为 Android 10+
+/// 禁止应用在后台启动界面，唯一豁免是**持有悬浮窗权限**。
+/// 通知自带的 fullScreenIntent 在 Android 14+ 对非闹钟类应用默认
+/// 不授权，vivo 又更严，所以只能靠这个开关。
+class _OverlayRow extends StatefulWidget {
+  const _OverlayRow();
+
+  @override
+  State<_OverlayRow> createState() => _OverlayRowState();
+}
+
+class _OverlayRowState extends State<_OverlayRow> with WidgetsBindingObserver {
+  bool? _granted;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final bool ok = await NativeBridge.canDrawOverlays;
+      if (!mounted) return;
+      setState(() => _granted = ok);
+    } catch (_) {}
+  }
+
+  Future<void> _request() async {
+    await NativeBridge.requestOverlayPermission();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool ok = _granted != false;
+    return AppCard(
+      shadow: true,
+      child: AppNavRow(
+        icon: ok ? AppIcons.shield : AppIcons.warning,
+        tone: ok ? AppIconTone.green : AppIconTone.orange,
+        title: ok ? '后台弹出提醒界面' : '后台弹出提醒界面（重要）',
+        subtitle: ok
+            ? '已允许：切到别的应用时也会直接弹出响铃页'
+            : '没开的话，切到别的应用只会收到一条通知 —— 点这里允许「显示在其他应用上层」',
+        onTap: ok ? null : _request,
+        showChevron: !ok,
+      ),
+    );
   }
 }

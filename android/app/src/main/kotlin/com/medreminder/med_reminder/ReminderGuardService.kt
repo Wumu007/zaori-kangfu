@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -67,9 +68,27 @@ class ReminderGuardService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
-        running = true
-        handler.postDelayed(heartbeat, 60_000L)
+        // V1.8.0：显式声明前台服务类型。
+        // Android 14 起若不传 type，部分 ROM 会直接抛
+        // SecurityException/ForegroundServiceStartNotAllowedException，
+        // 服务创建失败 —— 日志里「启动失败或被系统拒绝」就是它。
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification())
+            }
+            running = true
+            handler.postDelayed(heartbeat, 60_000L)
+        } catch (e: Exception) {
+            android.util.Log.e("MedReminder", "guard startForeground failed: $e")
+            running = false
+            stopSelf()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

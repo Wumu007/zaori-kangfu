@@ -51,10 +51,26 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- V1.8.0：悬浮窗权限。
+         「后台/切到别的应用时也能弹出响铃界面」的唯一可靠手段：
+         持有 SYSTEM_ALERT_WINDOW 的应用，系统明确允许它从后台启动
+         Activity（否则 Android 10+ 会直接拦掉 startActivity）。
+         通知的 fullScreenIntent 在 Android 14+ 对非闹钟类应用默认
+         不授权，vivo 又更严 —— 所以必须走这条。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- 语音识别 / TTS 在 Android 11+ 需要显式声明可见性 -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <!-- V1.8.0 关键：Android 11+ 的包可见性限制。
+             不声明这个 intent，queryIntentActivities / resolveActivity
+             对「系统语音输入界面」一律返回空 —— 表现就是
+             「系统语音服务=[]」「对话框一调用就返回空」，
+             第三条兜底路径永远不会真的弹出来。 -->
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />

@@ -277,6 +277,17 @@ class ReminderScheduler {
     final DateTime when = DateTime.now().add(Duration(seconds: seconds));
     final tz.TZDateTime tzw = tz.TZDateTime.from(when, tz.local);
     const String body = '这是一条测试提醒。看到它并听到铃声，说明提醒功能正常。';
+    final String payload = jsonEncode(<String, Object?>{
+      'med': '__test__',
+      'at': when.toIso8601String(),
+      'name': '测试提醒',
+      'body': body,
+      'ring': '1',
+      'test': '1',
+    });
+
+    // 通道一：flutter_local_notifications
+    bool ch1 = false;
     try {
       await _plugin.zonedSchedule(
         990001,
@@ -287,21 +298,34 @@ class ReminderScheduler {
         androidScheduleMode: AndroidScheduleMode.alarmClock,
         uiLocalNotificationDateInterpretation:
             UILocalNotificationDateInterpretation.absoluteTime,
-        payload: jsonEncode(<String, Object?>{
-          'med': '__test__',
-          'at': when.toIso8601String(),
-          'name': '测试提醒',
-          'body': body,
-          'ring': '1',
-          'test': '1',
-        }),
+        payload: payload,
       );
-      AppLog.instance.notify('测试提醒已排', '$seconds 秒后');
-      return true;
+      ch1 = true;
     } catch (e) {
-      AppLog.instance.error('测试提醒排程失败', e);
-      return false;
+      AppLog.instance.error('测试提醒·通道一', e);
     }
+
+    // 通道二：原生 alarm（与真实提醒同一条链路）
+    //
+    // V1.8.0 起测试必须两条都排，否则测不到「切换应用后能否弹界面」
+    // 这个真实场景 —— 实测发现通道一只有通知栏，通道二才会主动拉界面。
+    bool ch2 = false;
+    try {
+      ch2 = await NativeBridge.setTestAlarm(
+        seconds: seconds,
+        payload: payload,
+        title: '测试提醒',
+        body: body,
+      );
+    } catch (e) {
+      AppLog.instance.error('测试提醒·通道二', e);
+    }
+
+    AppLog.instance.notify(
+      '测试提醒已排',
+      '$seconds 秒后（通道一=$ch1 通道二=$ch2）',
+    );
+    return ch1 || ch2;
   }
 
   /// 冷启动信息：App 是否由点通知拉起、那条通知的 payload/actionId

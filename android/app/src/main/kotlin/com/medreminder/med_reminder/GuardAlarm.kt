@@ -117,6 +117,42 @@ object GuardAlarm {
         } catch (_: Exception) {}
     }
 
+    /**
+     * 排一条单独的闹钟（设置页「测试提醒」用）
+     *
+     * 测试也走第二通道，这样用户测的就是真实的后台链路：
+     * 原生 alarm → 原生 receiver → 发通知 + （有权限时）直接弹响铃页。
+     */
+    @JvmStatic
+    fun setOneShot(
+        context: Context,
+        id: Int,
+        at: Long,
+        title: String,
+        body: String,
+        payload: String,
+        name: String,
+    ) {
+        try {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val pi = buildPending(context, id, title, body, payload, name, at)
+            val showIntent = PendingIntent.getActivity(
+                context,
+                id,
+                Intent(context, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            am.setAlarmClock(AlarmManager.AlarmClockInfo(at, showIntent), pi)
+        } catch (_: Exception) {
+            try {
+                val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                val pi = buildPending(context, id, title, body, payload, name, at)
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun buildPending(
         context: Context,
         id: Int,
@@ -264,14 +300,24 @@ class GuardAlarmReceiver : BroadcastReceiver() {
         val body = intent.getStringExtra("body") ?: ""
         val payload = intent.getStringExtra("payload") ?: ""
 
+        // 1) 通知栏保底：即使后面弹界面失败，用户也能看到一条
         GuardAlarm.notifyReminder(context, id, title, body, payload)
 
-        // 进程活着时直接把循环铃声拉起来，省去用户点开的等待；
-        // 进程没起来时这一步会失败，但不影响已发出的通知。
+        if (payload.isEmpty()) return
+
+        // 2) V1.8.0：直接从后台拉起响铃界面并立即响铃
+        //
+        // 用户实测「切到别的应用后只在通知栏出现一条，点了才响」——
+        // 因为通知的 fullScreenIntent 在 Android 14+ 对非闹钟类应用
+        // 默认不授权，vivo 又更严。这里改成主动 startActivity：
+        // 持有悬浮窗权限时系统明确允许后台启动 Activity，界面会
+        // 直接盖在别的应用之上；没有权限时调用会被系统吞掉，
+        // 至少还有第 1 步的通知兜底。
         try {
-            if (payload.isNotEmpty()) {
-                MainActivity.ringStart(context)
-            }
+            MainActivity.launchRinging(context, payload)
+        } catch (_: Exception) {}
+        try {
+            MainActivity.ringStart(context)
         } catch (_: Exception) {}
     }
 }

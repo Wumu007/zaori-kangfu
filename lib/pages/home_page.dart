@@ -464,6 +464,7 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
   bool _notif = true;
   bool _battery = true;
   bool _guard = true;
+  bool _overlay = true;
 
   @override
   void initState() {
@@ -486,6 +487,7 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
   Future<void> _refresh() async {
     try {
       final bool battery = await NativeBridge.isIgnoringBatteryOptimizations;
+      final bool overlay = await NativeBridge.canDrawOverlays;
       bool guard = await NativeBridge.isGuardRunning;
       if (!guard) {
         // 回前台时补一次启动（Android 不允许后台启动前台服务）
@@ -496,6 +498,7 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
         _notif = AppState.instance.notificationGranted;
         _battery = battery;
         _guard = guard;
+        _overlay = overlay;
       });
     } catch (_) {}
   }
@@ -504,6 +507,8 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
     final List<String> out = <String>[];
     if (!_notif) out.add('通知没打开');
     if (!_battery) out.add('没加入电池白名单');
+    // V1.8.0：悬浮窗权限 —— 后台/切换应用时能否直接弹界面
+    if (!_overlay) out.add('没允许后台弹界面');
     if (!_guard) out.add('后台守护未运行');
     return out;
   }

@@ -8,6 +8,7 @@ import '../models/medication.dart';
 import '../models/medication_draft.dart';
 import '../services/medication_nlu.dart';
 import '../services/app_log.dart';
+import '../services/native_bridge.dart';
 import '../services/voice_input_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -789,7 +790,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Text(
-                        '这台手机暂时用不了语音',
+                        '这台手机没找到语音识别服务',
                         style: TextStyle(
                           fontSize: AppText.bodySm,
                           fontWeight: FontWeight.w600,
@@ -798,8 +799,9 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                       ),
                       SizedBox(height: 3),
                       Text(
-                        '系统和语音服务都没有响应。用下面的表单填写一样快，'
-                        '药名、剂量、时间填好就能保存。',
+                        '系统自带的语音服务没有响应（诊断日志里「系统语音服务」为空）。'
+                        '可以在手机设置里启用语音输入，或装一个语音服务再回来试。'
+                        '下面的表单填写一样快。',
                         style: TextStyle(
                           fontSize: AppText.tiny,
                           height: 1.5,
@@ -830,6 +832,20 @@ class _MedicationEditPageState extends State<MedicationEditPage>
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
                   child: const Text('再试一次',
+                      style: TextStyle(fontSize: AppText.tiny)),
+                ),
+                // V1.8.0：日志显示「系统语音服务=[]」时，最该做的是
+                // 把用户送到系统语音设置页去启用/安装服务
+                TextButton(
+                  onPressed: () => NativeBridge.openVoiceInputSettings(),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('语音设置',
                       style: TextStyle(fontSize: AppText.tiny)),
                 ),
                 TextButton.icon(

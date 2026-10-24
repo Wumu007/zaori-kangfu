@@ -204,6 +204,63 @@ class NativeBridge {
     } catch (_) {}
   }
 
+  /// 排一条原生测试闹钟（设置页「测试提醒」）
+  ///
+  /// 让测试也走第二通道：原生 alarm → 原生 receiver →
+  /// （有悬浮窗权限时）直接弹响铃页。这样测的就是真实的后台链路。
+  static Future<bool> setTestAlarm({
+    required int seconds,
+    required String payload,
+    String title = '测试提醒',
+    String body = '',
+    int id = 990001,
+  }) async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('setTestAlarm', <String, Object?>{
+            'seconds': seconds,
+            'id': id,
+            'payload': payload,
+            'title': title,
+            'body': body,
+          }) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ------------------------------------------------ 悬浮窗权限
+
+  /// 是否已获得「显示在其他应用上层」权限
+  ///
+  /// 这是「切到别的应用/后台也能弹出响铃界面」的关键：
+  /// 持有它，系统才允许后台 startActivity。
+  static Future<bool> get canDrawOverlays async {
+    if (!supported) return true;
+    try {
+      return await _ch.invokeMethod<bool>('canDrawOverlays') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 打开系统「语音输入 / 语音服务」设置页
+  static Future<void> openVoiceInputSettings() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('openVoiceInputSettings');
+    } catch (_) {}
+  }
+
+  /// 跳系统页申请悬浮窗权限
+  static Future<void> requestOverlayPermission() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('requestOverlayPermission');
+    } catch (_) {}
+  }
+
   /// 取「原生通知点开时带来的 payload」
   static Future<String?> takePendingPayload() async {
     if (!supported) return null;
