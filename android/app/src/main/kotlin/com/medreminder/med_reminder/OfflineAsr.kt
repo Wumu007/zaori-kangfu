@@ -91,6 +91,29 @@ object OfflineAsr {
     @JvmStatic
     fun isRunning(): Boolean = running
 
+    /** 已解压模型占用的字节数（设置页「清理」入口显示用） */
+    @JvmStatic
+    fun modelBytes(context: Context): Long {
+        val base = File(context.filesDir, TARGET_DIR)
+        if (!base.exists()) return 0L
+        return base.walkBottomUp()
+            .filter { it.isFile }
+            .sumOf { it.length() }
+    }
+
+    /**
+     * 删除已解压的离线模型，释放空间（约 70MB）。
+     *
+     * 音频与模型都只用于「本地识别」；只用在线识别时这份数据是纯占用。
+     * 删掉后如果哪天又需要本地识别，会自动重新从 assets 解压（慢 2–5 秒）。
+     */
+    @JvmStatic
+    fun clearModel(context: Context) {
+        cleanup()
+        model = null
+        runCatching { File(context.filesDir, TARGET_DIR).deleteRecursively() }
+    }
+
     @JvmStatic
     fun isPreparing(): Boolean = preparing
 

@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart';
 import 'app_log.dart';
 import 'app_settings.dart';
 import 'drug_vocabulary.dart';
+import 'medication_nlu.dart';
 
 /// 在线识别的一次结果
 ///
@@ -66,11 +67,14 @@ class TencentAsr {
   static const String _version = '2019-06-14';
   static const String _contentType = 'application/json; charset=utf-8';
 
-  /// 引擎：中文医疗专用模型。
+  /// 引擎：中文通用模型（**不是**医疗专用）。
   ///
-  /// 我们说的是药名、剂量、频次，属于医疗域；官方一句话识别支持
-  /// 这个取值。若哪天识别异常，可临时换成 '16k_zh'（通用）。
-  static const String engine = '16k_zh_medical';
+  /// 为什么从 16k_zh_medical 换成 16k_zh（V1.13.0）：
+  /// 腾讯云的「热词权重 100 = 同音强制替换」**只支持 8k_zh / 16k_zh**。
+  /// 用户实测「非布司他」被识别成「飞不死他」「非布斯他」，
+  /// 这类同音错字只有强制替换能根治（fei bu si ta → 非布司他）。
+  /// 医疗引擎虽然对术语更友好，但拿不到这个能力，权衡后选通用引擎 + 药名强制替换。
+  static const String engine = '16k_zh';
 
   /// 密钥是否已填齐
   static bool get configured {
@@ -124,10 +128,14 @@ class TencentAsr {
   // ------------------------------------------------------------ 请求
 
   static Map<String, Object?> _body(Uint8List pcm, String usrKey) {
-    final String hotwords = kDrugVocabulary
-        .take(100)
-        .map((String w) => '$w|10')
-        .join(',');
+    // 药名用**权重 100**（同音强制替换）：说「飞不死他」也会改回「非布司他」
+    final Set<String> names = <String>{
+      ...MedicationNlu.drugNames,
+      ...kDrugVocabulary,
+      '中药', '中成药',
+    };
+    final String hotwords =
+        names.take(120).map((String w) => '$w|100').join(',');
     return <String, Object?>{
       'ProjectId': 0,
       // 2 = 一句话识别

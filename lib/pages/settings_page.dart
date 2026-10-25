@@ -135,6 +135,10 @@ class SettingsPage extends StatelessWidget {
                               : '已配置 ${_maskKey(state.settings.asrSecretId)}',
                           onTap: () => _openAsrSheet(context),
                         ),
+                        const AppDivider(),
+                        // V1.13.0：离线模型解压后约占 70MB 存储。
+                        // 只用在线识别的人可以直接清掉，需要时会自动重新准备。
+                        const _ModelSizeRow(),
                       ],
                     ),
                   ),
@@ -291,7 +295,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.12.0 · 本地版',
+                      '早日康复 v1.13.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -1830,6 +1834,101 @@ class _AsrField extends StatelessWidget {
           borderSide: const BorderSide(color: AppColors.primary, width: 1.2),
         ),
       ),
+    );
+  }
+}
+
+
+/// 「离线语音模型」占用与清理
+///
+/// 解压后的模型约 70MB，是 App 占用空间的大头；只用在线识别时它是纯占用。
+/// 这里显示真实字节数并提供一键清理 —— 与其含糊说「App 占 150MB」，
+/// 不如让用户自己决定要不要留这份离线能力。
+class _ModelSizeRow extends StatefulWidget {
+  const _ModelSizeRow();
+
+  @override
+  State<_ModelSizeRow> createState() => _ModelSizeRowState();
+}
+
+class _ModelSizeRowState extends State<_ModelSizeRow>
+    with WidgetsBindingObserver {
+  int _bytes = 0;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  Future<void> _load() async {
+    final int b = await NativeBridge.offlineModelBytes;
+    if (!mounted) return;
+    setState(() => _bytes = b);
+  }
+
+  String get _sizeText {
+    if (_bytes <= 0) return '未占用（还没用过本地识别）';
+    final double mb = _bytes / (1024 * 1024);
+    return '已占用 ${mb.toStringAsFixed(0)} MB';
+  }
+
+  Future<void> _clear() async {
+    final bool? go = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('清理离线语音模型？'),
+        content: const Text(
+          '会释放约 70MB 空间。\n'
+          '之后如果没网、只能用本地识别时，会自动重新准备一次（慢几秒）。',
+          style: TextStyle(fontSize: AppText.caption, height: 1.6),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('清理'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+    setState(() => _busy = true);
+    await NativeBridge.clearOfflineModel();
+    await _load();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    showAppToast(context, '已清理，释放了离线模型占用的空间');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool has = _bytes > 0;
+    return AppNavRow(
+      icon: AppIcons.storage,
+      tone: has ? AppIconTone.orange : AppIconTone.gray,
+      title: '离线语音模型',
+      subtitle: has
+          ? '$_sizeText —— 只想用在线识别的话，点这里释放空间'
+          : _sizeText,
+      onTap: has && !_busy ? _clear : null,
+      showChevron: has,
     );
   }
 }

@@ -394,6 +394,24 @@ class NativeBridge {
     } catch (_) {}
   }
 
+  /// 离线模型在手机里占了多少字节（0 = 还没解压过）
+  static Future<int> get offlineModelBytes async {
+    if (!supported) return 0;
+    try {
+      return await _ch.invokeMethod<int>('offlineModelBytes') ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// 删除已解压的离线模型，释放空间（约 70MB）
+  static Future<void> clearOfflineModel() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('clearOfflineModel');
+    } catch (_) {}
+  }
+
   /// 取「原生通知点开时带来的 payload」
   static Future<String?> takePendingPayload() async {
     if (!supported) return null;

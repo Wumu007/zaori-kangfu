@@ -62,6 +62,15 @@ android {
         }
     }
 
+    // V1.13.0：安装包瘦身。
+    // x86 / x86_64 只有模拟器用得到，真机全是 arm；libvosk / libflutter
+    // 的 x86_64 版本合计约 30MB，全部剔除。
+    packaging {
+        jniLibs {
+            excludes += listOf("lib/x86/**", "lib/x86_64/**")
+        }
+    }
+
     buildTypes {
         release {
             // 没有 key.properties 时退回 debug 签名，保证「能装能测」；

@@ -17,6 +17,10 @@ class MedicationNlu {
   // ---------------------------------------------------------------- 词表
 
   /// 常见药名 + 商品名（V1 内置词表；V2 可换成云端药典 + ASR 热词表）
+  /// 全部标准药名 —— 在线识别的「热词表」直接用它，
+  /// 保证「识别用词表」和「解析用词表」永远是同一份。
+  static List<String> get drugNames => _lexicon.keys.toList();
+
   static const Map<String, List<String>> _lexicon = <String, List<String>>{
     '二甲双胍': ['二甲双胍', '格华止'],
     '阿司匹林': ['阿司匹林', '拜阿司匹林', '拜阿'],
@@ -271,8 +275,18 @@ class MedicationNlu {
       draft.fieldConfidence['name'] = 0.95;
       work = work.replaceAll(hit, ' ');
     } else {
-      final guess = _guessNameFrom(work);
-      if (guess != null) {
+      final String? guess = _guessNameFrom(work);
+      // V1.13.0：识别出来的名字不在词表，但和某个标准药名只差一个字
+      // （典型：非布斯他 → 非布司他、氨氯地平 → 安氯地平），
+      // 按标准名纠正并标黄。距离 1 的同长度匹配很窄，误伤概率低。
+      final String? near = guess == null ? null : _nearestDrugName(guess);
+      if (near != null) {
+        draft.name = near;
+        draft.fieldConfidence['name'] = 0.7;
+        draft.uncertainFields.add('name');
+        draft.issues.add('听到「$guess」，已按「$near」理解，请确认');
+        work = work.replaceAll(guess!, ' ');
+      } else if (guess != null) {
         draft.name = guess;
         draft.fieldConfidence['name'] = 0.55;
         draft.uncertainFields.add('name');
@@ -313,6 +327,33 @@ class MedicationNlu {
       }
     }
 
+    // 9.5) 「一共两袋，每天早八点和晚七点」→ 这是**全天总量**，不是每次剂量
+    //
+    // 用户实测：说「中药两袋，每天早8点和晚7点」，表单填成「每次两袋」。
+    //
+    // 判据刻意收得很窄，只对**包装类单位**（袋 / 包）生效：
+    // - 口语里「一天两袋」几乎都是总量（"两袋"指两包药）；
+    // - 而「两片 / 两粒」既可能是每次也可能是总量，语义模糊，
+    //   交给用户自己改更安全（也有既有用例依赖这一点）。
+    // 另外要求剂量数字等于时间点个数、且原文没有「各 / 每次 / 一顿」。
+    final bool packageUnit =
+        draft.dosageUnit == '袋' || draft.dosageUnit == '包';
+    if (packageUnit &&
+        draft.dosageValue != null &&
+        draft.times.length >= 2 &&
+        draft.dosageValue == draft.times.length.toDouble() &&
+        !source.contains('各') &&
+        !source.contains('每次') &&
+        !source.contains('一顿')) {
+      final double total = draft.dosageValue!;
+      final int n = draft.times.length;
+      final double per = total / n;
+      draft.dosageValue = per;
+      draft.uncertainFields.add('dosage');
+      draft.issues.add('听到「一共 ${_fmtNum(total)}${draft.dosageUnit ?? ''}、'
+          '每天 $n 次」，已按每次 ${_fmtNum(per)}${draft.dosageUnit ?? ''} 安排，请确认');
+    }
+
     // 10) 剂量置信度与缺失提示
     if (draft.dosageValue == null || draft.dosageUnit == null) {
       draft.fieldConfidence['dosage'] = 0;
@@ -347,7 +388,13 @@ class MedicationNlu {
     final Match? head = RegExp('每\\s*(?:周|星期|礼拜)').firstMatch(raw);
     if (head == null) return null;
 
-    final String rest = raw.substring(head.end);
+    // 识别结果里的空格可能是**全角空格**（U+3000）或不换行空格（U+00A0），
+    // 用 `ch == ' '` 比较会漏判 —— 用户实测「每周二 周五吃」只选中了周二，
+    // 就是因为在全角空格处直接 break 了。这里先统一压成半角空格。
+    final String rest = raw
+        .substring(head.end)
+        .replaceAll(RegExp('[\\s\\u3000\\u00a0]+'), ' ');
+
     final List<int> days = <int>[];
     int? count;
     int i = 0;
@@ -366,8 +413,14 @@ class MedicationNlu {
         i++;
         continue;
       }
-      // 分隔符继续往后读（「每周一、三、五」）
-      if (ch == ' ' || ch == '、' || ch == '和' || ch == '及' || ch == '与') {
+      // 分隔符继续往后读（「每周一、三、五」「每周二，周五」）
+      if (ch == ' ' || ch == '、' || ch == ',' || ch == '，' ||
+          ch == '。' || ch == '和' || ch == '及' || ch == '与') {
+        i++;
+        continue;
+      }
+      // 「周二周五」连写：跳过「周/星期/礼拜」继续读下一个星期
+      if (ch == '周' || ch == '星' || ch == '期' || ch == '礼' || ch == '拜') {
         i++;
         continue;
       }
@@ -405,6 +458,40 @@ class MedicationNlu {
   }
 
   // ---------------------------------------------------------------- 工具
+
+  /// 找「只差一个字」的标准药名（长度相同、编辑距离 1）
+  static String? _nearestDrugName(String guess) {
+    final String g = guess.trim();
+    if (g.length < 3 || g.length > 6) return null;
+    for (final String key in _lexicon.keys) {
+      if (key.length != g.length) continue;
+      if (_editDistance(key, g) == 1) return key;
+    }
+    return null;
+  }
+
+  /// 编辑距离（只用来判断「差一个字」）
+  static int _editDistance(String a, String b) {
+    final List<int> prev = List<int>.generate(b.length + 1, (int i) => i);
+    for (int i = 1; i <= a.length; i++) {
+      int last = prev[0];
+      prev[0] = i;
+      for (int j = 1; j <= b.length; j++) {
+        final int old = prev[j];
+        final int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        prev[j] = [prev[j] + 1, prev[j - 1] + 1, last + cost]
+            .reduce((int x, int y) => x < y ? x : y);
+        last = old;
+      }
+    }
+    return prev[b.length];
+  }
+
+  /// 数字转文案：1.0 → 1，0.5 → 0.5
+  static String _fmtNum(double v) {
+    if (v == v.roundToDouble()) return v.toStringAsFixed(0);
+    return v.toString();
+  }
 
   static String _toHm(int hour, int minute) {
     var h = hour % 24;

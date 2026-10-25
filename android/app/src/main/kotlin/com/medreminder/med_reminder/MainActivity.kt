@@ -361,6 +361,11 @@ class MainActivity : FlutterActivity() {
                         OfflineAsr.stop()
                         result.success(true)
                     }
+                    "offlineModelBytes" -> result.success(OfflineAsr.modelBytes(this))
+                    "clearOfflineModel" -> {
+                        OfflineAsr.clearModel(this)
+                        result.success(true)
+                    }
                     // ---- 在线识别（腾讯云）：录一句 PCM 交回 Dart ----
                     "startOnlineRecord" -> {
                         OnlineRecorder.record(
