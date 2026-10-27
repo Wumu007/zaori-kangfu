@@ -774,7 +774,16 @@ class MainActivity : FlutterActivity() {
         }
         instance = this
         capturePayload(intent)
-        NativeLog.log("MainActivity", "onCreate payload=${intent?.getStringExtra(EXTRA_PAYLOAD)?.take(40)}")
+        val bootPayload = intent?.getStringExtra(EXTRA_PAYLOAD)
+        NativeLog.log("MainActivity", "onCreate payload=${bootPayload?.take(40)}")
+
+        // V1.17.0：闹钟的 PendingIntent 现在直接指向本 Activity。
+        // 到这里说明就是被闹钟拉起来的 —— **立刻响铃**，不要等 Flutter
+        // 引擎起来再响（那要 2–4 秒，用户会觉得"没响"）。
+        if (!bootPayload.isNullOrEmpty()) {
+            NativeLog.log("MainActivity", "由闹钟直接拉起，立即响铃")
+            ringStart(this)
+        }
     }
 
     override fun onResume() {
@@ -806,6 +815,13 @@ class MainActivity : FlutterActivity() {
 
         // 带动作进来 = 用户在通知上点了「已服药 / 延后 / 跳过」。
         // 这时**不该**再进响铃页，否则用户刚做完决定又被弹一次。
+        // 热启动被闹钟拉起：同样立刻响铃（还没进响铃页）
+        val newPayload = intent.getStringExtra(EXTRA_PAYLOAD)
+        if (newPayload != null && intent.getStringExtra(EXTRA_ACTION) == null) {
+            NativeLog.log("MainActivity", "onNewIntent 带 payload，立即响铃")
+            ringStart(this)
+        }
+
         val action = intent.getStringExtra(EXTRA_ACTION)
         try {
             if (action != null) {

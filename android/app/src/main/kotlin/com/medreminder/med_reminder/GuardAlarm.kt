@@ -99,7 +99,8 @@ object GuardAlarm {
                 val body = o.optString("body", "")
                 val payload = o.optString("payload", "")
                 val name = o.optString("name", "")
-                val pi = buildPending(context, id, title, body, payload, name, at)
+                val broadcastPi = buildPending(context, id, title, body, payload, name, at)
+                val activityPi = buildActivityPending(context, id, payload)
 
                 val showIntent = PendingIntent.getActivity(
                     context,
@@ -110,14 +111,20 @@ object GuardAlarm {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                 )
                 try {
-                    am.setAlarmClock(
-                        AlarmManager.AlarmClockInfo(at, showIntent),
-                        pi,
-                    )
+                    // 主：闹钟到点直接拉起界面（绕过速冻）
+                    am.setAlarmClock(AlarmManager.AlarmClockInfo(at, showIntent), activityPi)
+                    // 备：晚 2 秒的广播（界面被拦时至少发通知 + 起响铃服务）
+                    try {
+                        am.setExactAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            at + 2_000L,
+                            broadcastPi,
+                        )
+                    } catch (_: Exception) {}
                 } catch (_: Exception) {
                     // 没有精确闹钟权限时退到不精确，至少还有机会响
                     try {
-                        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+                        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, broadcastPi)
                     } catch (_: Exception) {}
                 }
             }
@@ -142,7 +149,8 @@ object GuardAlarm {
     ) {
         try {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val pi = buildPending(context, id, title, body, payload, name, at)
+            val broadcastPi = buildPending(context, id, title, body, payload, name, at)
+            val activityPi = buildActivityPending(context, id, payload)
             val showIntent = PendingIntent.getActivity(
                 context,
                 id,
@@ -150,14 +158,60 @@ object GuardAlarm {
                     .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            am.setAlarmClock(AlarmManager.AlarmClockInfo(at, showIntent), pi)
-        } catch (_: Exception) {
-            try {
-                val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                val pi = buildPending(context, id, title, body, payload, name, at)
-                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
-            } catch (_: Exception) {}
+            am.setAlarmClock(AlarmManager.AlarmClockInfo(at, showIntent), activityPi)
+            // 备用广播：界面起不来时仍要发通知并响铃
+            runCatching {
+                am.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    at + 2_000L,
+                    broadcastPi,
+                )
+            }
+            NativeLog.log("GuardAlarm", "一次性闹钟已排（界面+广播双路） at=$at")
+        } catch (e: Exception) {
+            NativeLog.log("GuardAlarm", "setAlarmClock 失败: ${e.message}")
         }
+    }
+
+    /**
+     * 闹钟的主 PendingIntent：**直接拉起界面**（V1.17.0 关键改动）
+     *
+     * ═══════════════════════════════════════════════════════════════
+     * 为什么不能再用广播（用户第 10 次反馈：「切回软件界面才响」）
+     * ═══════════════════════════════════════════════════════════════
+     *
+     * 现象是决定性的：到点不响，**一切回 App 就立刻响**。
+     * 这不是延迟，是 vivo 的「应用速冻」把进程冻住了 —— 冻结状态下
+     * 系统投递的广播只会排队，直到进程解冻才派发。日志里到点那一刻
+     * 原生日志一片空白，正是广播还没被处理。
+     *
+     * 前台服务挡不住速冻（日志里守护服务明明在跑）。能绕过去的只有一条：
+     * 让闹钟的 operation 本身是 **Activity**，而不是 BroadcastReceiver。
+     * 系统在闹钟触发时会直接 startActivity（App 有悬浮窗权限，
+     * 后台启动界面被允许），进程被一起拉活，界面和铃声同时到位。
+     *
+     * 备用那条广播仍然保留（见 scheduleAll），负责在界面被系统拦掉时
+     * 至少发出通知并起响铃服务。
+     */
+    private fun buildActivityPending(
+        context: Context,
+        id: Int,
+        payload: String,
+    ): PendingIntent {
+        val i = Intent(context, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP,
+            )
+            putExtra(MainActivity.EXTRA_PAYLOAD, payload)
+        }
+        return PendingIntent.getActivity(
+            context,
+            id or 0x20000000,
+            i,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     private fun buildPending(
