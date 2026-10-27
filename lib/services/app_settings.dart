@@ -123,6 +123,35 @@ class AppSettings extends ChangeNotifier {
     await sp.setString(_kAsrSecretKey, _asrSecretKey);
   }
 
+  // ------------------------------------------------ 保险箱：设置快照
+
+  /// 导出可写进保险箱的设置片段（V1.15.0）
+  ///
+  /// 只放「重装后重新配置最麻烦」的几项：腾讯云密钥、在线识别开关、
+  /// 提醒间隔、字号。其他项无关紧要，不扩大备份面。
+  Map<String, Object?> vaultSettings() => <String, Object?>{
+        'asrOnline': _asrOnlineEnabled,
+        'asrSecretId': _asrSecretId,
+        'asrSecretKey': _asrSecretKey,
+        'snoozeMinutes': _snoozeMinutes,
+        'largeText': _largeText,
+      };
+
+  /// 从保险箱恢复设置（只恢复「本机现在还是空」的那部分，不覆盖用户
+  /// 刚改过的值）
+  Future<bool> applyVaultSettings(Map<String, Object?> v) async {
+    bool changed = false;
+    final String id = (v['asrSecretId'] as String? ?? '').trim();
+    final String key = (v['asrSecretKey'] as String? ?? '').trim();
+    if (_asrSecretId.isEmpty && _asrSecretKey.isEmpty && id.isNotEmpty) {
+      await saveAsrCredentials(secretId: id, secretKey: key);
+      final bool online = v['asrOnline'] as bool? ?? false;
+      if (online) await setAsrOnlineEnabled(true);
+      changed = true;
+    }
+    return changed;
+  }
+
   /// 清除密钥，同时关闭在线识别
   Future<void> clearAsrCredentials() async {
     _asrSecretId = '';

@@ -59,7 +59,21 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     _resyncSilently();
   }
 
+  /// 上一次对齐排程的时间（V1.15.0 去抖）
+  ///
+  /// 用户日志里 5 分钟出现 40 多次「排程汇总 + 第二通道已排」——
+  /// 每次回前台都全量重排 96 条通知、重写全部原生 alarm。
+  /// 这不只是日志噪音：原生的 setAlarmClock 会被反复覆盖，
+  /// 刚排好的闹钟可能正好被重写打断。3 秒内只做一次。
+  DateTime? _lastResync;
+
   Future<void> _resyncSilently() async {
+    final DateTime now = DateTime.now();
+    final DateTime? last = _lastResync;
+    if (last != null && now.difference(last) < const Duration(seconds: 3)) {
+      return;
+    }
+    _lastResync = now;
     try {
       // 1) 回前台补排一次（ROM 可能已把排期清掉）
       await ReminderScheduler.instance.scheduleAll(

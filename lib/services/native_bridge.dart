@@ -375,6 +375,66 @@ class NativeBridge {
     }
   }
 
+  // ------------------------------------------------ 数据保险箱
+
+  /// 把一份 JSON 写进「卸载也不删」的保险箱。
+  ///
+  /// 落地位置：`Android/media/<包名>/zaori-vault.json`。
+  /// 该目录在 Android 11+ 属于媒体目录，应用读写自己包名下的子目录
+  /// 无需任何权限，且**卸载 App 不会被删除** —— 重装后正好用来恢复。
+  /// 返回写入路径（失败为 null）。
+  static Future<String?> vaultSave(String json) async {
+    if (!supported) return null;
+    try {
+      return await _ch.invokeMethod<String>(
+        'vaultSave',
+        <String, Object?>{'json': json},
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 读保险箱内容（没有备份返回 null）
+  static Future<String?> vaultLoad() async {
+    if (!supported) return null;
+    try {
+      return await _ch.invokeMethod<String>('vaultLoad');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 保险箱文件的完整路径（设置页展示用）
+  static Future<String> vaultPath() async {
+    if (!supported) return '';
+    try {
+      return await _ch.invokeMethod<String>('vaultPath') ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 是否已有备份
+  static Future<bool> get vaultExists async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('vaultExists') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 删除备份（用户主动清理）
+  static Future<bool> clearVault() async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('vaultClear') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ------------------------------------------------ 全屏通知 / 响铃服务
 
   /// Android 14+ 是否允许本应用使用「全屏通知」。

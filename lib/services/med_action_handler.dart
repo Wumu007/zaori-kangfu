@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../state/app_state.dart';
 import 'native_bridge.dart';
+import 'vault_service.dart';
 import '../models/medication.dart';
 import 'alarm_bus.dart';
 import 'medication_repository.dart';
@@ -124,4 +125,6 @@ Future<void> handleMedAction(String payload, String actionId) async {
   // 收尾 3：连前台响铃服务一起停。
   // 只停 MediaPlayer 的话，ongoing 通知还挂在通知栏上，用户会以为没处理掉。
   await NativeBridge.stopRingingService();
+  // 收尾 4：写库后顺手更新保险箱（服药记录也算数据，重装后要能恢复）
+  VaultService.instance.scheduleSave();
 }

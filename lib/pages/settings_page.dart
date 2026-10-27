@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import '../services/app_log.dart';
 import '../services/app_settings.dart';
 import '../services/backup_service.dart';
+import '../services/vault_service.dart';
 import '../services/tencent_asr.dart';
 import '../services/native_bridge.dart';
 import '../services/reminder_scheduler.dart';
@@ -278,6 +279,9 @@ class SettingsPage extends StatelessWidget {
                           onTap: () => _openLogSheet(context),
                         ),
                         const AppDivider(),
+                        // V1.15.0：数据保险箱 —— 卸载重装不丢药和密钥
+                        const _VaultRow(),
+                        const AppDivider(),
                         AppNavRow(
                           icon: AppIcons.backup,
                           tone: AppIconTone.purple,
@@ -299,7 +303,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.14.0 · 本地版',
+                      '早日康复 v1.15.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -1506,6 +1510,160 @@ class _OverlayRowState extends State<_OverlayRow> with WidgetsBindingObserver {
 }
 
 
+/// 「数据保险箱」行（V1.15.0）
+///
+/// ═══════════════════════════════════════════════════════════════════
+/// 为什么要给用户看见这一行
+/// ═══════════════════════════════════════════════════════════════════
+///
+/// 用户两次反馈都指向同一件事：**重装后数据全没了**。
+/// 第一次是「提醒不生效」，日志里其实是「在提醒 0 种药」——药没了；
+/// 第二次是「每次重装都要重填腾讯云密钥」。
+///
+/// 现在药品、记录、设置、密钥会自动写进 Android/media/<包名>/ 下，
+/// 卸载不删、重装自动恢复。这一行把「存在哪、上次什么时候存的、
+/// 多大」摆出来，并给一个可以手动清理的开关 —— 涉及密钥，必须让用户
+/// 知道文件在哪、能删掉。
+class _VaultRow extends StatefulWidget {
+  const _VaultRow();
+
+  @override
+  State<_VaultRow> createState() => _VaultRowState();
+}
+
+class _VaultRowState extends State<_VaultRow> with WidgetsBindingObserver {
+  bool _exists = false;
+  int _bytes = 0;
+  String _path = '';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  Future<void> _load() async {
+    final bool e = await NativeBridge.vaultExists;
+    final int b = await VaultService.instance.sizeBytes();
+    final String p = await VaultService.instance.path();
+    if (!mounted) return;
+    setState(() {
+      _exists = e;
+      _bytes = b;
+      _path = p;
+    });
+  }
+
+  String get _subtitle {
+    if (!_exists) {
+      return '还没有备份 —— 添加药品或填写密钥后会自动生成';
+    }
+    final String kb = _bytes > 1024 * 1024
+        ? '${(_bytes / 1024 / 1024).toStringAsFixed(1)} MB'
+        : '${(_bytes / 1024).toStringAsFixed(0)} KB';
+    final DateTime? t = VaultService.instance.lastSavedAt;
+    final String when = t == null
+        ? '数据变化时自动更新'
+        : '上次 ${t.month}月${t.day}日 '
+            '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    return '已备份 $kb · $when · 重装 App 会自动恢复';
+  }
+
+  Future<void> _open() async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('数据保险箱'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text(
+              '药品、服药记录、提醒设置和腾讯云密钥会自动备份到这个文件。'
+              '卸载或重装 App 后，首次打开会自动恢复 —— 不用重新添加药品，'
+              '也不用重新填密钥。',
+              style: TextStyle(fontSize: AppText.caption, height: 1.6),
+            ),
+            const SizedBox(height: 10),
+            SelectableText(
+              _path.isEmpty ? '（路径读取失败）' : _path,
+              style: const TextStyle(
+                fontSize: 11.5,
+                height: 1.5,
+                color: AppColors.muted,
+                fontFamily: 'monospace',
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              '文件里包含密钥明文，请不要发送给别人。'
+              '在文件管理的「Android/media」目录下可以找到或删除它。',
+              style: TextStyle(
+                fontSize: AppText.tiny,
+                height: 1.5,
+                color: AppColors.warn,
+              ),
+            ),
+          ],
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () async {
+              final NavigatorState nav = Navigator.of(ctx);
+              await VaultService.instance.save();
+              nav.pop();
+              await _load();
+              if (!mounted) return;
+              showAppToast(context, '已备份到保险箱');
+            },
+            child: const Text('立即备份'),
+          ),
+          if (_exists)
+            TextButton(
+              onPressed: () async {
+                final NavigatorState nav = Navigator.of(ctx);
+                await VaultService.instance.clear();
+                nav.pop();
+                await _load();
+                if (!mounted) return;
+                showAppToast(context, '已删除保险箱（重装后将无法自动恢复）');
+              },
+              style: TextButton.styleFrom(foregroundColor: AppColors.danger),
+              child: const Text('删除备份'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppNavRow(
+      icon: AppIcons.storage,
+      tone: _exists ? AppIconTone.green : AppIconTone.gray,
+      title: '数据保险箱',
+      subtitle: _subtitle,
+      onTap: _open,
+    );
+  }
+}
+
 /// 「锁屏全屏提醒」行（V1.14.0）
 ///
 /// ═══════════════════════════════════════════════════════════════════
@@ -1641,6 +1799,8 @@ class _AsrSheetState extends State<_AsrSheet> {
     }
     await AppSettings.instance
         .saveAsrCredentials(secretId: id, secretKey: key);
+    // 立刻写进保险箱：密钥只要存下来，重装后就能自动恢复
+    await VaultService.instance.save();
     if (!mounted) return;
     await _test();
   }
@@ -1674,6 +1834,8 @@ class _AsrSheetState extends State<_AsrSheet> {
 
   Future<void> _clear() async {
     await AppSettings.instance.clearAsrCredentials();
+    // 同步更新保险箱，否则重装后会把已删除的密钥又恢复回来
+    await VaultService.instance.save();
     if (!mounted) return;
     setState(() {
       _idCtrl.clear();

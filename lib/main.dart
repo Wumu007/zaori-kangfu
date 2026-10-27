@@ -7,6 +7,7 @@ import 'services/med_action_handler.dart';
 import 'services/medication_repository.dart';
 import 'services/native_bridge.dart';
 import 'services/reminder_scheduler.dart';
+import 'services/vault_service.dart';
 import 'state/app_state.dart';
 
 /// 启动流程（顺序不能改）
@@ -40,8 +41,21 @@ Future<void> main() async {
   // 启动时**不申请**，只查询真实状态：通知没开就在首页顶部挂一条提示条，
   // 由用户自己点过去开。冷启动直接弹系统授权框（尤其精确闹钟那个会跳设置页）
   // 会让人以为 App 坏了 —— 而且用户还没看到任何界面就被要求授权。
-  final PermissionReport report =
-      await ReminderScheduler.instance.checkPermissions();
+  PermissionReport report = await ReminderScheduler.instance.checkPermissions();
+
+  // V1.15.0：**重装后通知权限一定被重置**（Android 13+ 卸载即撤销授权）。
+  // 用户日志里 `通知=false` 却没有任何申请动作 —— 于是到点系统直接丢弃
+  // 通知，用户只看到界面（或什么都没有）。这里补一次主动申请：
+  // 只在「确实没开」时弹，系统弹过一次后不会再烦，用户拒绝也不会反复打扰。
+  if (!report.notifications) {
+    log.perm('通知未开启', '主动申请一次（重装后系统会重置该授权）');
+    try {
+      report = await ReminderScheduler.instance.requestPermissions();
+    } catch (e) {
+      log.error('申请通知权限', e);
+    }
+  }
+
   AppState.instance.setNotificationGranted(report.allGood);
   log.perm(
     '权限快照',
@@ -50,6 +64,31 @@ Future<void> main() async {
   );
 
   await AppState.instance.bootstrap();
+
+  // ═══════════════════════════════════════════════════════════════
+  // V1.15.0：先恢复保险箱，再排程
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // 顺序很关键：重装后数据库是空的，日志里就是「在提醒 0 种药」。
+  // 必须先把保险箱里的药导回来，scheduleAll 才有东西可排；
+  // 反过来做的话，本次启动等于白跑一趟，用户看到的就是「没提醒」。
+  try {
+    final VaultRestoreResult restored =
+        await VaultService.instance.restoreIfNeeded();
+    if (restored.didSomething) {
+      log.notify(
+        '启动时恢复数据',
+        '药品 ${restored.meds} 种 / 记录 ${restored.logs} 条 / '
+            '密钥${restored.keyRestored ? '已恢复' : '未恢复'}',
+      );
+      // 恢复后要重建内存状态，否则首页还是空的
+      await AppState.instance.refresh();
+    } else {
+      log.notify('启动时无需恢复', restored.reason);
+    }
+  } catch (e) {
+    log.error('恢复保险箱', e);
+  }
 
   final List<Medication> meds =
       await MedicationRepository.instance.activeMedications();

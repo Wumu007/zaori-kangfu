@@ -237,6 +237,50 @@ class BackupService {
 
   // ------------------------------------------------------------ 导出：备份
 
+  /// 生成一份完整的备份 JSON（不落盘）。
+  ///
+  /// 除了手动导出，V1.15.0 的「数据保险箱」也用它：内容结构与用户
+  /// 手动导出的文件**完全一致**，所以恢复时走同一套 importFromJson，
+  /// 不需要维护第二套解析逻辑。
+  ///
+  /// [extra] 用来塞备份文件之外的附加信息（例如腾讯云密钥），
+  /// 用户手动导出时不会带上，只在保险箱里出现。
+  Future<String> buildBackupJson({
+    Map<String, Object?>? extra,
+    bool pretty = false,
+  }) async {
+    final Database db = await _openDb();
+    final List<Map<String, Object?>> meds =
+        await db.query('medications', orderBy: 'created_at ASC');
+    final List<Map<String, Object?>> logs =
+        await db.query('dose_logs', orderBy: 'planned_time ASC');
+
+    final Map<String, Object?> payload = <String, Object?>{
+      'format': kBackupFormat,
+      'version': kBackupVersion,
+      'exportedAt': DateTime.now().toIso8601String(),
+      'medications': meds,
+      'logs': logs,
+      if (extra != null) ...extra,
+    };
+
+    return pretty
+        ? const JsonEncoder.withIndent('  ').convert(payload)
+        : jsonEncode(payload);
+  }
+
+  /// 库里现在有多少种药（用于判断「重装后是不是空的」）
+  Future<int> medicationCount() async {
+    try {
+      final Database db = await _openDb();
+      final List<Map<String, Object?>> r =
+          await db.rawQuery('SELECT COUNT(*) AS c FROM medications');
+      return (r.first['c'] as int?) ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   /// 导出完整备份（药品 + 全部记录）
   Future<ExportResult?> exportBackup({required String suggestedName}) async {
     final Database db = await _openDb();

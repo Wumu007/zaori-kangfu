@@ -52,6 +52,10 @@ class MainActivity : FlutterActivity() {
         @Volatile
         var instance: MainActivity? = null
             private set
+
+        /** Activity 是否正处在前台可见（响铃服务据此决定要不要补拉起） */
+        @Volatile
+        var isVisible: Boolean = false
         private const val CHANNEL = "med_reminder/native"
         private const val REQ_SPEECH = 40001
 
@@ -417,6 +421,15 @@ class MainActivity : FlutterActivity() {
                         result.success(text)
                     }
                     "takePendingAction" -> result.success(NativeLog.takePendingAction(this))
+                    // ---- V1.15.0：数据保险箱（卸载不丢） ----
+                    "vaultSave" -> {
+                        val json = call.argument<String>("json") ?: ""
+                        result.success(VaultStore.save(this, json))
+                    }
+                    "vaultLoad" -> result.success(VaultStore.load(this))
+                    "vaultPath" -> result.success(VaultStore.path(this))
+                    "vaultExists" -> result.success(VaultStore.exists(this))
+                    "vaultClear" -> result.success(VaultStore.clear(this))
                     "flushNativeLog" -> {
                         NativeLog.flush(this)
                         result.success(true)
@@ -754,7 +767,18 @@ class MainActivity : FlutterActivity() {
         NativeLog.log("MainActivity", "onCreate payload=${intent?.getStringExtra(EXTRA_PAYLOAD)?.take(40)}")
     }
 
+    override fun onResume() {
+        super.onResume()
+        isVisible = true
+    }
+
+    override fun onPause() {
+        isVisible = false
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        isVisible = false
         if (instance === this) instance = null
         super.onDestroy()
     }

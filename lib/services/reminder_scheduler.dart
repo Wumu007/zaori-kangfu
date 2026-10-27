@@ -11,6 +11,7 @@ import '../models/medication.dart';
 import 'app_log.dart';
 import 'app_settings.dart';
 import 'native_bridge.dart';
+import 'vault_service.dart';
 
 /// 通知点击动作
 ///
@@ -275,7 +276,6 @@ class ReminderScheduler {
   /// payload 带 test 标记：点「已服药」不会往数据库写脏记录。
   Future<bool> testReminder({int seconds = 10}) async {
     final DateTime when = DateTime.now().add(Duration(seconds: seconds));
-    final tz.TZDateTime tzw = tz.TZDateTime.from(when, tz.local);
     const String body = '这是一条测试提醒。看到它并听到铃声，说明提醒功能正常。';
     final String payload = jsonEncode(<String, Object?>{
       'med': '__test__',
@@ -286,46 +286,42 @@ class ReminderScheduler {
       'test': '1',
     });
 
-    // 通道一：flutter_local_notifications
-    bool ch1 = false;
-    try {
-      await _plugin.zonedSchedule(
-        990001,
-        '测试提醒',
-        body,
-        tzw,
-        _detailsRaw(title: '测试提醒', body: body, snoozeMinutes: 10),
-        androidScheduleMode: AndroidScheduleMode.alarmClock,
-        uiLocalNotificationDateInterpretation:
-            UILocalNotificationDateInterpretation.absoluteTime,
-        payload: payload,
-      );
-      ch1 = true;
-    } catch (e) {
-      AppLog.instance.error('测试提醒·通道一', e);
-    }
-
-    // 通道二：原生 alarm（与真实提醒同一条链路）
+    // ═══════════════════════════════════════════════════════════════
+    // V1.15.0：测试只走**原生一条通道**
+    // ═══════════════════════════════════════════════════════════════
     //
-    // V1.8.0 起测试必须两条都排，否则测不到「切换应用后能否弹界面」
-    // 这个真实场景 —— 实测发现通道一只有通知栏，通道二才会主动拉界面。
-    bool ch2 = false;
+    // 旧实现同时排 fln 与原生两条，同一个 id 990001 被两个 AlarmManager
+    // 各排一次。用户日志里测试耗时忽长忽短：
+    //   09:27:01 排 → 09:27:18 响（17 秒）
+    //   09:27:44 排 → 09:28:06 响（22 秒）
+    //   09:28:35 排 → 09:29:04 响（29 秒）
+    // 两条通道互相覆盖同一 PendingIntent、再加上用户连点几次，
+    // 就出现了这种「不准点」。
+    //
+    // 原生这条在日志里是完整成功的（闹钟触发 → 服务起 → 铃声起 →
+    // 界面拉起来），所以测试就只留它：一次排一条、准时、可复现。
+    // 先在 fln 上取消可能残留的旧测试通知，避免上一版排的还响一次。
     try {
-      ch2 = await NativeBridge.setTestAlarm(
+      await _plugin.cancel(990001);
+    } catch (_) {}
+
+    bool ok = false;
+    try {
+      ok = await NativeBridge.setTestAlarm(
         seconds: seconds,
         payload: payload,
         title: '测试提醒',
         body: body,
       );
     } catch (e) {
-      AppLog.instance.error('测试提醒·通道二', e);
+      AppLog.instance.error('测试提醒排程', e);
     }
 
     AppLog.instance.notify(
       '测试提醒已排',
-      '$seconds 秒后（通道一=$ch1 通道二=$ch2）',
+      '$seconds 秒后（原生闹钟${ok ? '已排' : '排程失败'}）',
     );
-    return ch1 || ch2;
+    return ok;
   }
 
   /// 冷启动信息：App 是否由点通知拉起、那条通知的 payload/actionId
@@ -445,6 +441,10 @@ class ReminderScheduler {
     } catch (e) {
       AppLog.instance.error('第二通道排程', e);
     }
+
+    // 排程是「数据刚变过」的统一信号 —— 顺手把保险箱更新一下（2 秒去抖），
+    // 这样重装后能恢复出最新的药品清单，而不是空库。
+    VaultService.instance.scheduleSave();
   }
 
   /// 把未来两天内的提醒整理成 JSON 交给原生

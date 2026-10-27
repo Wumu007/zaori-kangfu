@@ -148,14 +148,24 @@ class RingingService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var launchAttempt = 0
 
-    /** 拉起界面的重试：部分 ROM 首次会拒，屏幕亮起后第二次就能成 */
+    /**
+     * 拉起界面。
+     *
+     * V1.15.0：从「每 2.5 秒重试 3 次」改成「只补一次」。
+     *
+     * 用户日志里一次提醒出现了 3 条「点开原生通知」—— 就是这三次重试
+     * 每次都会触发一次 onNewIntent，把响铃页反复推到栈上（返回要按三次）。
+     * 实际日志证明首次 startActivity 就是成功的（`startActivity 成功
+     * overlay=true`），重试纯属多余；只有界面确实不在前台时才补一次。
+     */
     private val launchTask = object : Runnable {
         override fun run() {
             if (!active) return
-            if (launchAttempt >= 3) return
+            if (launchAttempt >= 2) return
+            if (launchAttempt == 1 && MainActivity.isVisible) return
             launchAttempt++
             MainActivity.launchRinging(this@RingingService, currentPayload)
-            handler.postDelayed(this, 2500L)
+            handler.postDelayed(this, 2000L)
         }
     }
 
