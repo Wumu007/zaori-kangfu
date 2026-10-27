@@ -172,7 +172,7 @@ class _MedicationEditPageState extends State<MedicationEditPage>
   /// 复制运行日志（语音失败时用户把它发回来，就能定位卡在哪一步）
   Future<void> _copyAppLog() async {
     await Clipboard.setData(
-      ClipboardData(text: AppLog.instance.report()),
+      ClipboardData(text: await AppLog.instance.fullReport()),
     );
     if (!mounted) return;
     showAppToast(context, '日志已复制，可粘贴发给我们');

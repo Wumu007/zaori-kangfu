@@ -157,5 +157,34 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="medication reminder reliability" />
         </service>
+
+        <!-- ==================================================================
+             到点响铃前台服务（V1.14.0）
+             ══════════════════════════════════════════════════════════════════
+             用户日志证明：到点那一刻 Dart 一条记录都没有（界面从未被拉起），
+             通知只躺在通知栏里，点开才响。
+
+             两件事同时坏掉：
+             1) 后台 startActivity 被系统拦（无悬浮窗权限时必然被拦），
+                旧代码把异常吞了，所以毫无痕迹；
+             2) 铃声靠 Activity 的静态播放器，进程被冻结后 onReceive 一结束
+                就被回收，铃声刚起就断。
+
+             前台服务把这两件事一起解决：进程有"身份"不会被立刻回收，
+             铃声能一直响；服务里还能反复尝试拉起界面。
+             ================================================================== -->
+        <service
+            android:name=".RingingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="medication alarm ringing" />
+        </service>
+
+        <!-- 响铃通知上的「已服药 / 延后 / 跳过」 -->
+        <receiver
+            android:name=".RingingActionReceiver"
+            android:exported="false" />
     </application>
 </manifest>

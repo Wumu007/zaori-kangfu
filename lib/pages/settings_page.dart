@@ -172,6 +172,10 @@ class SettingsPage extends StatelessWidget {
                   // 直接弹出响铃界面的关键。没有它，系统只允许一条通知。
                   const _OverlayRow(),
                   const SizedBox(height: AppSpace.gap),
+                  // V1.14.0：Android 14+ 的「全屏通知」授权。
+                  // 没有它，锁屏时通知只会躺在通知栏，不会自动弹出响铃页。
+                  const _FullScreenRow(),
+                  const SizedBox(height: AppSpace.gap),
                   // V1.6.0：一键测试 —— 让「后台到底响不响」变成可验证的事，
                   // 而不是每次都等真的吃药时间才发现没响。
                   AppCard(
@@ -295,7 +299,7 @@ class SettingsPage extends StatelessWidget {
                   const SizedBox(height: 24),
                   const Center(
                     child: Text(
-                      '早日康复 v1.13.0 · 本地版',
+                      '早日康复 v1.14.0 · 本地版',
                       style: TextStyle(fontSize: AppText.tiny, color: AppColors.faint),
                     ),
                   ),
@@ -1394,7 +1398,9 @@ class _LogSheetState extends State<_LogSheet> {
   }
 
   Future<void> _copyAll() async {
-    await Clipboard.setData(ClipboardData(text: AppLog.instance.report()));
+    await Clipboard.setData(
+      ClipboardData(text: await AppLog.instance.fullReport()),
+    );
     if (!mounted) return;
     showAppToast(context, '日志已复制，可直接粘贴发出去');
   }
@@ -1499,6 +1505,80 @@ class _OverlayRowState extends State<_OverlayRow> with WidgetsBindingObserver {
   }
 }
 
+
+/// 「锁屏全屏提醒」行（V1.14.0）
+///
+/// ═══════════════════════════════════════════════════════════════════
+/// 为什么这一行是这轮的关键
+/// ═══════════════════════════════════════════════════════════════════
+///
+/// 用户日志里到点那一刻**一条 Dart 记录都没有**，通知却躺在通知栏、
+/// 点开才响 —— 这正是「全屏通知被系统收回」的典型表现。
+///
+/// Android 14 起，非闹钟/通话类应用即使声明了 USE_FULL_SCREEN_INTENT，
+/// 系统也会默认收回，必须用户手动在「允许全屏通知」里打开。
+/// 用药提醒属于时间敏感场景，这个开关值得引导用户开。
+class _FullScreenRow extends StatefulWidget {
+  const _FullScreenRow();
+
+  @override
+  State<_FullScreenRow> createState() => _FullScreenRowState();
+}
+
+class _FullScreenRowState extends State<_FullScreenRow>
+    with WidgetsBindingObserver {
+  bool? _granted;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final bool ok = await NativeBridge.canUseFullScreenIntent;
+      if (!mounted) return;
+      setState(() => _granted = ok);
+    } catch (_) {}
+  }
+
+  Future<void> _request() async {
+    await NativeBridge.requestFullScreenIntentPermission();
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool ok = _granted != false;
+    return AppCard(
+      shadow: true,
+      child: AppNavRow(
+        icon: ok ? AppIcons.reminder : AppIcons.warning,
+        tone: ok ? AppIconTone.green : AppIconTone.orange,
+        title: ok ? '锁屏直接弹出提醒' : '锁屏直接弹出提醒（重要）',
+        subtitle: ok
+            ? '已允许：锁屏或息屏时到点会直接亮屏弹出响铃页'
+            : '没开的话，锁屏时只会在通知栏显示一条，点开才响 —— 点这里去开启「允许全屏通知」',
+        onTap: ok ? null : _request,
+        showChevron: !ok,
+      ),
+    );
+  }
+}
 
 /// 腾讯云密钥配置面板
 ///

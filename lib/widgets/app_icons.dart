@@ -144,12 +144,30 @@ class AppIconTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (Color fg, Color bg) = _colors(tone);
+    // V1.14.0：底色改成「同色系微渐变」。
+    // 纯平面色块在浅紫底上显得单薄；从浅到底一点点过渡，
+    // 图标块就有了厚度，和参考稿的质感一致（代价只有一层渐变，无性能影响）。
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: filled ? fg : bg,
-        borderRadius: BorderRadius.circular(size * 0.29),
+        gradient: filled
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: <Color>[fg.withOpacity(0.88), fg],
+              )
+            : LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: <Color>[bg, Color.lerp(bg, Colors.white, 0.45)!],
+              ),
+        borderRadius: BorderRadius.circular(size * 0.32),
+        // 内嵌一层极淡白边，浅底上能勾出边界（参考稿的玻璃感）
+        border: Border.all(
+          color: filled ? Colors.white.withOpacity(0.18) : Colors.white,
+          width: 1,
+        ),
       ),
       alignment: Alignment.center,
       child: Icon(
@@ -243,14 +261,28 @@ class SectionHeader extends StatelessWidget {
       padding: padding,
       child: Row(
         children: <Widget>[
+          // V1.14.0：左侧加一小段主色竖条，分组标题不再和正文糊在一起
+          Container(
+            width: 3,
+            height: 12,
+            margin: const EdgeInsets.only(right: 7),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: <Color>[Color(0xFF8A86FF), AppColors.primary],
+              ),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
           Expanded(
             child: Text(
               text,
               style: const TextStyle(
                 fontSize: AppText.caption,
                 fontWeight: FontWeight.w600,
-                color: AppColors.muted,
-                letterSpacing: 0.2,
+                color: AppColors.sub,
+                letterSpacing: 0.3,
               ),
             ),
           ),

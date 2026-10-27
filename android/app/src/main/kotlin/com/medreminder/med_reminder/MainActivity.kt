@@ -44,11 +44,22 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     companion object {
+
+        /**
+         * 当前存活的 Activity（V1.14.0）。
+         * 响铃服务的通知按钮要靠它判断「Dart 在不在跑」。
+         */
+        @Volatile
+        var instance: MainActivity? = null
+            private set
         private const val CHANNEL = "med_reminder/native"
         private const val REQ_SPEECH = 40001
 
         /** 原生通知带过来的服药 payload（Dart 侧 takePendingPayload 取用） */
         const val EXTRA_PAYLOAD = "med_payload"
+
+        /** 用户点了通知按钮时带的动作：taken / snooze / skip */
+        const val EXTRA_ACTION = "med_action"
 
         @Volatile internal var pendingPayload: String? = null
 
@@ -232,8 +243,29 @@ class MainActivity : FlutterActivity() {
          * 用户仍会收到通知（保底）。
          */
         @JvmStatic fun launchRinging(context: Context, payload: String) {
+            launchActivity(context, payload, null)
+        }
+
+        /** 用户点了通知上的按钮 → 带着动作把 App 拉起来，由 Dart 落库 */
+        @JvmStatic fun launchWithAction(context: Context, payload: String, action: String) {
+            launchActivity(context, payload, action)
+        }
+
+        /**
+         * 从后台拉起 MainActivity。
+         *
+         * ═══════════════════════════════════════════════════════════
+         * V1.14.0：这里以前把所有异常都吞了，是这次排查困难的根源
+         * ═══════════════════════════════════════════════════════════
+         *
+         * 用户日志里到点那一刻「一条记录都没有」—— 说明界面从未拉起，
+         * 但代码里没有任何痕迹。现在每一步都记进 native_ring.log：
+         * 悬浮窗有没有、startActivity 抛了什么、Activity 有没有活着的实例。
+         */
+        @JvmStatic
+        fun launchActivity(context: Context, payload: String, action: String?) {
+            pendingPayload = payload
             try {
-                pendingPayload = payload
                 val i = Intent(context, MainActivity::class.java).apply {
                     addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -241,8 +273,67 @@ class MainActivity : FlutterActivity() {
                             Intent.FLAG_ACTIVITY_CLEAR_TOP,
                     )
                     putExtra(EXTRA_PAYLOAD, payload)
+                    if (action != null) putExtra(EXTRA_ACTION, action)
                 }
                 context.startActivity(i)
+                NativeLog.log(
+                    "launchRinging",
+                    "startActivity 成功 overlay=${canDrawOverlays(context)} " +
+                        "alive=${instance != null} action=${action ?: "-"}",
+                )
+            } catch (e: Exception) {
+                NativeLog.log(
+                    "launchRinging",
+                    "startActivity 被拒 ${e.javaClass.simpleName}: ${e.message} " +
+                        "overlay=${canDrawOverlays(context)}",
+                )
+            }
+        }
+
+        /** Android 14+ 的「全屏通知」授权状态 */
+        @JvmStatic
+        fun canUseFullScreenIntent(context: Context): Boolean {
+            return try {
+                if (Build.VERSION.SDK_INT >= 34) {
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+                        as android.app.NotificationManager
+                    nm.canUseFullScreenIntent()
+                } else {
+                    true
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        /**
+         * 跳到「允许全屏通知」的系统页。
+         *
+         * Android 14 起，非闹钟/通话类应用的 USE_FULL_SCREEN_INTENT 会被
+         * 系统收回 —— 没有它，锁屏时通知只能待在通知栏，不会自动弹界面。
+         * 用药提醒属于「时间敏感」，值得让用户手动开这一项。
+         */
+        @JvmStatic
+        fun requestFullScreenIntentPermission(context: Context) {
+            try {
+                if (Build.VERSION.SDK_INT >= 34) {
+                    context.startActivity(
+                        Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        },
+                    )
+                    return
+                }
+            } catch (_: Exception) {}
+            // 老系统或 ROM 没有该页面：退到应用详情页
+            try {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
             } catch (_: Exception) {}
         }
 
@@ -308,6 +399,26 @@ class MainActivity : FlutterActivity() {
                     }
                     "openVoiceInputSettings" -> {
                         openVoiceInputSettings(this)
+                        result.success(true)
+                    }
+                    // ---- V1.14.0：全屏通知权限 / 响铃服务 / 原生日志 ----
+                    "canUseFullScreenIntent" -> result.success(canUseFullScreenIntent(this))
+                    "requestFullScreenIntentPermission" -> {
+                        requestFullScreenIntentPermission(this)
+                        result.success(true)
+                    }
+                    "isRingingServiceActive" -> result.success(RingingService.active)
+                    "ringingServiceStop" -> {
+                        RingingService.stop(this, "Dart 请求")
+                        result.success(true)
+                    }
+                    "readNativeLog" -> {
+                        val text = NativeLog.read(this)
+                        result.success(text)
+                    }
+                    "takePendingAction" -> result.success(NativeLog.takePendingAction(this))
+                    "flushNativeLog" -> {
+                        NativeLog.flush(this)
                         result.success(true)
                     }
                     "setTestAlarm" -> {
@@ -638,7 +749,14 @@ class MainActivity : FlutterActivity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        instance = this
         capturePayload(intent)
+        NativeLog.log("MainActivity", "onCreate payload=${intent?.getStringExtra(EXTRA_PAYLOAD)?.take(40)}")
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        super.onDestroy()
     }
 
     /**
@@ -651,9 +769,17 @@ class MainActivity : FlutterActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         capturePayload(intent)
-        // 让 Dart 侧知道有新 payload 可取（Dart 收到后自行 push 响铃页）
+
+        // 带动作进来 = 用户在通知上点了「已服药 / 延后 / 跳过」。
+        // 这时**不该**再进响铃页，否则用户刚做完决定又被弹一次。
+        val action = intent.getStringExtra(EXTRA_ACTION)
         try {
-            channel?.invokeMethod("ringingPayload", null)
+            if (action != null) {
+                NativeLog.log("MainActivity", "onNewIntent action=$action")
+                channel?.invokeMethod("nativeActionPending", null)
+            } else {
+                channel?.invokeMethod("ringingPayload", null)
+            }
         } catch (_: Exception) {}
     }
 

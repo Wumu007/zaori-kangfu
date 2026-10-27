@@ -17,42 +17,110 @@ import 'package:flutter/material.dart';
 class AppColors {
   AppColors._();
 
-  static const Color primary = Color(0xFF2F5BF6); // 主色：按钮、选中态
-  static const Color primarySoft = Color(0xFFEFF3FF); // 主色浅底：图标底、提示卡
+  // ═══════════════════════════════════════════════════════════════
+  // V1.14.0：整体视觉换成「柔紫 + 白卡」
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // 参考用户给的设计：淡紫底 + 纯白大圆角卡片 + 柔和紫调投影 +
+  // 粉彩图标块。相对上一版的 iOS 灰白风，这套更「轻、柔、有空气感」，
+  // 主要变化是：
+  // 1. 主色从亮蓝 #2F5BF6 换成靛紫 #5B57F0（紫比蓝更沉稳，也不刺眼）；
+  // 2. 页面底色改成带一点紫的浅灰紫，卡片纯白才「浮」得起来；
+  // 3. 分割线与描边全部调淡，层次交给投影而不是线条。
+  static const Color primary = Color(0xFF5B57F0); // 主色：按钮、选中态
+  static const Color primaryDeep = Color(0xFF3E3AD8); // 主色深：渐变末端、按下态
+  static const Color primarySoft = Color(0xFFEDEBFF); // 主色浅底：图标底、提示卡
   static const Color success = Color(0xFF12B76A); // 已服用
   static const Color successSoft = Color(0xFFE8F7EF); // 已服用浅底
   static const Color warn = Color(0xFFB54708); // 到点未服 / 低置信度文字
-  static const Color warnSoft = Color(0xFFFFF7ED); // 到点未服 / 低置信度底
+  static const Color warnSoft = Color(0xFFFFF6EC); // 到点未服 / 低置信度底
   static const Color danger = Color(0xFFB42318); // 删除等破坏性动作
 
-  static const Color ink = Color(0xFF131A26); // 主文字
-  static const Color sub = Color(0xFF6B7688); // 次文字
-  static const Color muted = Color(0xFF8A94A6); // 辅助文字、字段名
-  static const Color faint = Color(0xFFA6AEBD); // 更弱的说明文字
+  static const Color ink = Color(0xFF14142B); // 主文字（带一点紫的深灰）
+  static const Color sub = Color(0xFF5F6178); // 次文字
+  static const Color muted = Color(0xFF8B8DA3); // 辅助文字、字段名
+  static const Color faint = Color(0xFFA9ABC0); // 更弱的说明文字
 
-  static const Color line = Color(0xFFEDEFF2); // 卡片描边
-  static const Color divider = Color(0xFFF1F3F5); // 列表分隔线
-  static const Color surface = Color(0xFFF7F8FA); // 浅灰底（转写卡、胶囊底）
+  static const Color line = Color(0xFFEFEEF8); // 卡片描边
+  static const Color divider = Color(0xFFF3F2FA); // 列表分隔线
+  static const Color surface = Color(0xFFF7F6FD); // 浅紫灰底（转写卡、胶囊底）
   static const Color bg = Color(0xFFFFFFFF); // 卡片/页面底色
 
-  // ---- V1.4.0 iOS 风格补充 ----
+  // ---- 渐变底（页面背景） ----
 
-  /// 分组页面底色（iOS systemGroupedBackground 浅色版）
-  /// 比 surface 再淡一点，让白卡片能"浮"起来
-  static const Color groupedBg = Color(0xFFF2F4F7);
+  /// 页面顶部：略深的浅紫
+  static const Color pageTop = Color(0xFFEFECFE);
 
-  /// 发丝分割线：0.5px，iOS separator 的观感
-  static const Color hairline = Color(0xFFE5E8EC);
+  /// 页面底部：几乎纯白，让内容区干净
+  static const Color pageBottom = Color(0xFFFAF9FF);
+
+  /// 分组页面底色（子页面 Scaffold 用，和渐变底色对齐）
+  static const Color groupedBg = Color(0xFFF4F2FD);
+
+  /// 发丝分割线：0.5px
+  static const Color hairline = Color(0xFFECEBF5);
 
   /// 毛玻璃底层色（配合 BackdropFilter 用）
-  static const Color glassTint = Color(0xF2FFFFFF);
+  static const Color glassTint = Color(0xF7FFFFFF);
 
-  /// 图标底色板：给不同功能小图标一套统一的柔和底色
-  static const Color iconBlueBg = Color(0xFFEAF0FF);
-  static const Color iconGreenBg = Color(0xFFE9F8F0);
-  static const Color iconOrangeBg = Color(0xFFFFF2E5);
-  static const Color iconPurpleBg = Color(0xFFF1EDFF);
-  static const Color iconGrayBg = Color(0xFFF0F2F5);
+  /// 图标底色板：粉彩系（参考稿里的紫 / 蓝 / 橙 / 粉 / 青）
+  static const Color iconBlueBg = Color(0xFFE8EEFF);
+  static const Color iconGreenBg = Color(0xFFE6F8F0);
+  static const Color iconOrangeBg = Color(0xFFFFEFE0);
+  static const Color iconPurpleBg = Color(0xFFEFEAFF);
+  static const Color iconGrayBg = Color(0xFFF1F0F8);
+  static const Color iconPinkBg = Color(0xFFFDEAF4);
+  static const Color iconCyanBg = Color(0xFFE4F7FB);
+}
+
+/// 阴影与渐变
+///
+/// 统一在这里定义，页面里不要各写各的 —— 参考稿那种「卡片轻轻浮起来」
+/// 的感觉，全靠投影的颜色和扩散范围一致。
+class AppShadow {
+  AppShadow._();
+
+  /// 卡片投影：紫调、大扩散、低透明度。
+  /// 用黑色投影会显脏，紫调投影才和底色是一家人。
+  static const List<BoxShadow> card = <BoxShadow>[
+    BoxShadow(
+      color: Color(0x0D4B3FB5),
+      blurRadius: 22,
+      offset: Offset(0, 8),
+    ),
+  ];
+
+  /// 更轻的投影：内嵌小卡、分组内的次级卡片
+  static const List<BoxShadow> soft = <BoxShadow>[
+    BoxShadow(
+      color: Color(0x0A4B3FB5),
+      blurRadius: 14,
+      offset: Offset(0, 5),
+    ),
+  ];
+
+  /// 悬浮元素（底部导航、悬浮按钮）
+  static const List<BoxShadow> float = <BoxShadow>[
+    BoxShadow(
+      color: Color(0x1A5348C8),
+      blurRadius: 28,
+      offset: Offset(0, 10),
+    ),
+  ];
+
+  /// 页面渐变底色
+  static const LinearGradient page = LinearGradient(
+    begin: Alignment.topCenter,
+    end: Alignment.bottomCenter,
+    colors: <Color>[AppColors.pageTop, AppColors.pageBottom],
+  );
+
+  /// 主按钮渐变
+  static const LinearGradient primaryButton = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: <Color>[Color(0xFF6E6AF8), AppColors.primaryDeep],
+  );
 }
 
 /// 字号
@@ -83,12 +151,12 @@ class AppText {
 class AppRadius {
   AppRadius._();
 
-  static const double card = 18; // 卡片（iOS insetGrouped 风格）
-  static const double cardSm = 14; // 小卡片、内嵌块
+  static const double card = 20; // 卡片（参考稿的大圆角）
+  static const double cardSm = 16; // 小卡片、内嵌块
   static const double button = 14; // 按钮
   static const double pill = 999; // 完全胶囊
   static const double badge = 8; // 徽标
-  static const double iconTile = 12; // 图标底板
+  static const double iconTile = 13; // 图标底板
 }
 
 class AppSpace {

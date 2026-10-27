@@ -50,15 +50,10 @@ class AppCard extends StatelessWidget {
         color: color,
         borderRadius: BorderRadius.circular(radius ?? AppRadius.card),
         border: border ? Border.all(color: AppColors.line, width: 0.5) : null,
-        boxShadow: shadow
-            ? const <BoxShadow>[
-                BoxShadow(
-                  color: Color(0x0A101828),
-                  blurRadius: 12,
-                  offset: Offset(0, 2),
-                ),
-              ]
-            : null,
+        // V1.14.0：投影换成紫调大扩散。
+        // 旧的黑色浅影在白底上几乎看不见，卡片与页面糊在一起；
+        // 紫调 + 更大 blur 才有参考稿那种「浮起来」的层次。
+        boxShadow: shadow ? AppShadow.card : null,
       ),
       child: child,
     );
@@ -108,19 +103,35 @@ class PrimaryButton extends StatelessWidget {
       child: SizedBox(
         height: height,
         width: double.infinity,
-        child: Material(
-          color: AppColors.primary,
-          borderRadius: BorderRadius.circular(AppRadius.button),
-          child: InkWell(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: AppShadow.primaryButton,
             borderRadius: BorderRadius.circular(AppRadius.button),
-            onTap: active ? onPressed : null,
-            child: Center(
-              child: Text(
-                label,
-                style: const TextStyle(
-                  fontSize: AppText.body,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
+            boxShadow: active
+                ? const <BoxShadow>[
+                    BoxShadow(
+                      color: Color(0x335B57F0),
+                      blurRadius: 18,
+                      offset: Offset(0, 8),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(AppRadius.button),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(AppRadius.button),
+              onTap: active ? onPressed : null,
+              child: Center(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: AppText.body,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                    letterSpacing: 0.2,
+                  ),
                 ),
               ),
             ),

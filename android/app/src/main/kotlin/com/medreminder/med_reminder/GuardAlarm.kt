@@ -43,7 +43,14 @@ object GuardAlarm {
 
     private const val PREFS = "guard_alarm_v1"
     private const val KEY = "items"
-    private const val CHANNEL_ID = "med_alarm_v2"
+    /**
+     * 渠道用响铃服务那一份（V1.14.0）。
+     *
+     * 之前复用 flutter_local_notifications 建的 med_alarm_v2：
+     * Android 8+ 的渠道声音/震动创建后不可改，`setSound()` 静默无效，
+     * 于是「通知来了但没声音」或「只有一声提示音」。自建渠道才拿得准。
+     */
+    private val CHANNEL_ID: String get() = RingingService.CHANNEL_ID
 
     /** 保存 Dart 传来的排程表（JSON 数组字符串）并立即全部重排 */
     @JvmStatic
@@ -246,10 +253,13 @@ object GuardAlarm {
                 .setFullScreenIntent(pi, true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setWhen(System.currentTimeMillis())
-            if (alarmUri != null) {
+            // 注意：Android 8+ 上 setSound/setVibrate 对已存在的渠道无效，
+            // 声音由渠道（RingingService.ensureChannel）决定，这里只是
+            // 给低版本系统兜底。
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O && alarmUri != null) {
                 b.setSound(alarmUri, attrs)
+                b.setVibrate(longArrayOf(0, 800, 400, 800, 400, 800))
             }
-            b.setVibrate(longArrayOf(0, 800, 400, 800, 400, 800))
 
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
                 as NotificationManager
@@ -258,32 +268,7 @@ object GuardAlarm {
     }
 
     private fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        try {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
-                as NotificationManager
-            // 已存在时系统会忽略（渠道不可改），这正是我们要的：
-            // 和 fln 用同一个 id，配置以先创建的那份为准
-            val ch = NotificationChannel(
-                CHANNEL_ID,
-                "服药提醒（闹钟式）",
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                description = "到点像闹钟一样响铃、震动并全屏提醒服药"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 800, 400, 800, 400, 800)
-                enableLights(true)
-                val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                if (alarmUri != null) {
-                    val attrs = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                    setSound(alarmUri, attrs)
-                }
-            }
-            nm.createNotificationChannel(ch)
-        } catch (_: Exception) {}
+        RingingService.ensureChannel(context)
     }
 }
 
@@ -300,24 +285,32 @@ class GuardAlarmReceiver : BroadcastReceiver() {
         val body = intent.getStringExtra("body") ?: ""
         val payload = intent.getStringExtra("payload") ?: ""
 
-        // 1) 通知栏保底：即使后面弹界面失败，用户也能看到一条
+        // 到点这一刻的现场，全部记进 native_ring.log。
+        // 上一轮排查最痛的地方就是这里没有任何痕迹。
+        NativeLog.log(
+            "GuardAlarmReceiver",
+            "闹钟触发 id=$id overlay=${MainActivity.canDrawOverlays(context)} " +
+                "fullScreen=${MainActivity.canUseFullScreenIntent(context)} " +
+                "payload=${payload.take(40)}",
+        )
+        NativeLog.flush(context)
+
+        if (payload.isEmpty()) {
+            GuardAlarm.notifyReminder(context, id, title, body, payload)
+            return
+        }
+
+        // 1) 通知栏保底（服务起不来时用户至少能看到）
         GuardAlarm.notifyReminder(context, id, title, body, payload)
 
-        if (payload.isEmpty()) return
-
-        // 2) V1.8.0：直接从后台拉起响铃界面并立即响铃
+        // 2) 前台服务：真正「响到用户处理为止」的那一层
         //
-        // 用户实测「切到别的应用后只在通知栏出现一条，点了才响」——
-        // 因为通知的 fullScreenIntent 在 Android 14+ 对非闹钟类应用
-        // 默认不授权，vivo 又更严。这里改成主动 startActivity：
-        // 持有悬浮窗权限时系统明确允许后台启动 Activity，界面会
-        // 直接盖在别的应用之上；没有权限时调用会被系统吞掉，
-        // 至少还有第 1 步的通知兜底。
-        try {
-            MainActivity.launchRinging(context, payload)
-        } catch (_: Exception) {}
-        try {
-            MainActivity.ringStart(context)
-        } catch (_: Exception) {}
+        // 为什么不是直接 startActivity：
+        // Android 10+ 禁止后台启动界面，只有持悬浮窗才豁免；用户重装后
+        // 这个权限会丢，而旧代码把异常吞了 —— 于是界面从未出现，
+        // 日志里到点那一刻也是空的。
+        // 前台服务有两件事做得到：进程不被立刻回收（铃声能持续），
+        // 以及可以反复尝试拉起界面。
+        RingingService.start(context, id, title, body, payload)
     }
 }

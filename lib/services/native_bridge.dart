@@ -88,6 +88,11 @@ class NativeBridge {
   static final StreamController<void> _ringingCtrl =
       StreamController<void>.broadcast();
 
+  /// 用户在响铃通知上点了按钮（已服药 / 延后 / 跳过）。
+  /// 名单里说「点完还得再进响铃页」是错的，收到这个事件要直接处理动作。
+  static final StreamController<void> _actionCtrl =
+      StreamController<void>.broadcast();
+
   static bool _handlerBound = false;
 
   /// 正在等待的那次录音（原生录完会回调 onlineAudio）
@@ -99,6 +104,9 @@ class NativeBridge {
   /// 「原生通知被点开了」事件流。收到后调用 [takePendingPayload] 取 payload。
   static Stream<void> get ringingRequests => _ringingCtrl.stream;
 
+  /// 「响铃通知上的按钮被点了」事件流。收到后调用 [takePendingAction]。
+  static Stream<void> get actionRequests => _actionCtrl.stream;
+
   /// 绑定原生 → Dart 的回调通道。
   /// 只需在首次使用语音前调用一次（重复调用无副作用）。
   static void bindAsrHandler() {
@@ -107,6 +115,10 @@ class NativeBridge {
     _ch.setMethodCallHandler((MethodCall call) async {
       if (call.method == 'ringingPayload') {
         _ringingCtrl.add(null);
+        return null;
+      }
+      if (call.method == 'nativeActionPending') {
+        _actionCtrl.add(null);
         return null;
       }
       if (call.method == 'onlineAudio') {
@@ -360,6 +372,74 @@ class NativeBridge {
           false;
     } catch (_) {
       return false;
+    }
+  }
+
+  // ------------------------------------------------ 全屏通知 / 响铃服务
+
+  /// Android 14+ 是否允许本应用使用「全屏通知」。
+  ///
+  /// 这是锁屏时能否自动弹出响铃页的**系统开关**：Android 14 起，
+  /// 非闹钟/通话类应用的 USE_FULL_SCREEN_INTENT 会被系统收回，
+  /// 没有它，通知只能躺在通知栏（用户点一下才响）。
+  static Future<bool> get canUseFullScreenIntent async {
+    if (!supported) return true;
+    try {
+      return await _ch.invokeMethod<bool>('canUseFullScreenIntent') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 跳系统页开启「允许全屏通知」
+  static Future<void> requestFullScreenIntentPermission() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('requestFullScreenIntentPermission');
+    } catch (_) {}
+  }
+
+  /// 响铃前台服务是否正在运行
+  static Future<bool> get isRingingServiceActive async {
+    if (!supported) return false;
+    try {
+      return await _ch.invokeMethod<bool>('isRingingServiceActive') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 让原生停掉响铃服务（页面已处理完时用）
+  static Future<void> stopRingingService() async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('ringingServiceStop');
+    } catch (_) {}
+  }
+
+  /// 读原生日志（广播/前台服务/startActivity 的现场记录）
+  static Future<String> readNativeLog() async {
+    if (!supported) return '';
+    try {
+      return await _ch.invokeMethod<String>('readNativeLog') ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 取走「用户点通知按钮」留下的动作，返回 (action, payload) 或 null
+  static Future<({String action, String payload})?> takePendingAction() async {
+    if (!supported) return null;
+    try {
+      final String? raw = await _ch.invokeMethod<String>('takePendingAction');
+      if (raw == null || !raw.contains('\u0001')) return null;
+      final int i = raw.indexOf('\u0001');
+      return (
+        action: raw.substring(0, i),
+        payload: raw.substring(i + 1),
+      );
+    } catch (_) {
+      return null;
     }
   }
 

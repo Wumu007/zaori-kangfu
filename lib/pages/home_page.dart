@@ -243,13 +243,17 @@ class _ProgressCard extends StatelessWidget {
       decoration: BoxDecoration(
         // V1.4.0：从纯色块升级为渐变 + 柔和投影，
         // 更像 iOS「卡片浮在灰底上」的层次
+        // V1.14.0：配色跟着全站换到柔紫系。
+        // 原来的蓝调在这套紫底上会显得"外来"，现在是同色系的浅紫渐变，
+        // 卡片像从背景里长出来，而不是贴上去。
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFFEDF2FF), Color(0xFFF6F8FF)],
+          colors: <Color>[Color(0xFFF0EDFF), Color(0xFFFBFAFF)],
         ),
         borderRadius: BorderRadius.circular(AppRadius.card),
-        border: Border.all(color: const Color(0xFFDCE5FB), width: 0.5),
+        border: Border.all(color: const Color(0xFFE6E2FF), width: 0.5),
+        boxShadow: AppShadow.card,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -271,7 +275,7 @@ class _ProgressCard extends StatelessWidget {
                       style: const TextStyle(
                         fontSize: AppText.bodySm,
                         fontWeight: FontWeight.w600,
-                        color: Color(0xFF1B3A8B),
+                        color: Color(0xFF2E2A86),
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -293,7 +297,7 @@ class _ProgressCard extends StatelessWidget {
             child: LinearProgressIndicator(
               value: state.todayProgress,
               minHeight: 7,
-              backgroundColor: const Color(0xFFDDE5FB),
+              backgroundColor: const Color(0xFFE4E0FA),
               valueColor: AlwaysStoppedAnimation<Color>(
                 allDone ? AppColors.success : AppColors.primary,
               ),
@@ -475,6 +479,7 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
   bool _battery = true;
   bool _guard = true;
   bool _overlay = true;
+  bool _fullScreen = true;
 
   @override
   void initState() {
@@ -498,6 +503,7 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
     try {
       final bool battery = await NativeBridge.isIgnoringBatteryOptimizations;
       final bool overlay = await NativeBridge.canDrawOverlays;
+      final bool fullScreen = await NativeBridge.canUseFullScreenIntent;
       bool guard = await NativeBridge.isGuardRunning;
       if (!guard) {
         // 回前台时补一次启动（Android 不允许后台启动前台服务）
@@ -509,6 +515,7 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
         _battery = battery;
         _guard = guard;
         _overlay = overlay;
+        _fullScreen = fullScreen;
       });
     } catch (_) {}
   }
@@ -519,6 +526,8 @@ class _MissBannerState extends State<_MissBanner> with WidgetsBindingObserver {
     if (!_battery) out.add('没加入电池白名单');
     // V1.8.0：悬浮窗权限 —— 后台/切换应用时能否直接弹界面
     if (!_overlay) out.add('没允许后台弹界面');
+    // V1.14.0：锁屏时能否自动弹界面，取决于系统的「全屏通知」授权
+    if (!_fullScreen) out.add('没允许锁屏全屏提醒');
     if (!_guard) out.add('后台守护未运行');
     return out;
   }

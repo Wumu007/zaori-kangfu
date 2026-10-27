@@ -121,4 +121,7 @@ Future<void> handleMedAction(String payload, String actionId) async {
   // 收尾 2：通知响铃页这条已被处理 + 停循环铃声
   AlarmBus.instance.handle(payload);
   await NativeBridge.ringStop();
+  // 收尾 3：连前台响铃服务一起停。
+  // 只停 MediaPlayer 的话，ongoing 通知还挂在通知栏上，用户会以为没处理掉。
+  await NativeBridge.stopRingingService();
 }

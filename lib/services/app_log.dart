@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'native_bridge.dart';
+
 /// 分类标签：日志按来源打标签，导出后一眼能看出问题出在哪条链路
 class LogTag {
   LogTag._();
@@ -165,12 +167,37 @@ class AppLog {
     return sb.toString();
   }
 
+  /// 完整报告：Dart 日志 + 原生日志。
+  ///
+  /// V1.14.0 新增原生日志段。上一轮排查最大的困难是「到点那一刻
+  /// 一条记录都没有」—— 因为广播、前台服务、startActivity 都在原生层，
+  /// Dart 根本看不到。现在原生的每一步都写在 native_ring.log 里，
+  /// 这里拼在末尾，用户导出发过来就能直接看出卡在哪一层。
+  Future<String> fullReport() async {
+    final StringBuffer sb = StringBuffer(report());
+    try {
+      final String native = await NativeBridge.readNativeLog();
+      if (native.trim().isNotEmpty) {
+        sb
+          ..writeln()
+          ..writeln('===== 原生提醒链路日志（广播 / 前台服务 / 拉起界面） =====');
+        sb.writeln(native.trim());
+      } else {
+        sb
+          ..writeln()
+          ..writeln('===== 原生提醒链路日志 =====')
+          ..writeln('（暂无记录：说明系统的闹钟广播从未到达本应用）');
+      }
+    } catch (_) {}
+    return sb.toString();
+  }
+
   /// 写到缓存目录，返回文件（供系统分享面板导出）
   Future<File?> exportFile() async {
     try {
       final Directory dir = await getTemporaryDirectory();
       final File f = File('${dir.path}/$_fileName');
-      await f.writeAsString(report(), flush: true);
+      await f.writeAsString(await fullReport(), flush: true);
       return f;
     } catch (e) {
       log(LogTag.error, '导出日志失败', '$e');

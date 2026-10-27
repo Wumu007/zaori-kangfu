@@ -81,9 +81,17 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: IndexedStack(
+      // 底栏区域用渐变最底部的近白色，和 body 渐变自然衔接；
+      // 不建议透明 + extendBody —— 内容会钻到悬浮栏底下，各页都要单独补边距。
+      backgroundColor: AppColors.pageBottom,
+      // V1.14.0：整页铺一层「上浅紫 → 下近白」的渐变。
+      // 纯色底会让白卡片和背景贴在一起；渐变让顶部有颜色、内容区干净，
+      // 也更接近参考稿的通透感。
+      body: Container(
+        decoration: const BoxDecoration(gradient: AppShadow.page),
+        child: SafeArea(
+          bottom: false,
+          child: IndexedStack(
           index: _index,
           children: <Widget>[
             HomePage(
@@ -92,10 +100,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             ),
             const HistoryPage(),
             const _MedsTab(),
-            const SettingsPage(),
-          ],
+              const SettingsPage(),
+            ],
+          ),
         ),
       ),
+      // 悬浮胶囊底栏：自带外边距与圆角，视觉上浮在页面之上
       bottomNavigationBar: _BottomBar(index: _index, onChanged: _go),
     );
   }
@@ -131,57 +141,77 @@ class _BottomBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // iOS 观感：半透明 + 毛玻璃 + 极细顶部分隔线
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          decoration: const BoxDecoration(
-            color: Color(0xF7FFFFFF),
-            border: Border(top: BorderSide(color: AppColors.hairline, width: 0.5)),
-          ),
-          child: SafeArea(
-            top: false,
-            child: SizedBox(
-              height: 56,
-              child: Row(
-                children: <Widget>[
-                  for (int i = 0; i < _items.length; i++)
-                    Expanded(
-                      child: InkResponse(
-                        onTap: () => onChanged(i),
-                        radius: 34,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: <Widget>[
-                            Icon(
-                              index == i ? _items[i].$1 : _items[i].$2,
-                              size: 23,
-                              color: index == i
-                                  ? AppColors.primary
-                                  : AppColors.faint,
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              _items[i].$3,
-                              style: TextStyle(
-                                fontSize: AppText.tab,
-                                fontWeight: index == i
-                                    ? FontWeight.w600
-                                    : FontWeight.w400,
-                                color: index == i
-                                    ? AppColors.primary
-                                    : AppColors.faint,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+    // ═══════════════════════════════════════════════════════════════
+    // V1.14.0：底部导航改成「悬浮胶囊」
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 参考稿的底栏不是贴着屏幕边缘的一条通栏，而是浮在内容之上的
+    // 圆角胶囊。好处有三：
+    // 1. 和「柔紫 + 白卡」的整体风格一致，不会像一条生硬的横条；
+    // 2. 内容可以从它下面穿过去（extendBody），页面显得更高；
+    // 3. 选中项有自己的浅紫底，一眼能看出在哪一页。
+    //
+    // 布局逻辑（4 个 Tab、切换方式、顺序）与之前完全一致。
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(26),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Container(
+            height: 62,
+            decoration: BoxDecoration(
+              color: const Color(0xF2FFFFFF),
+              borderRadius: BorderRadius.circular(26),
+              border: Border.all(color: Colors.white, width: 1),
+              boxShadow: AppShadow.float,
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            child: Row(
+              children: <Widget>[
+                for (int i = 0; i < _items.length; i++)
+                  Expanded(child: _tab(context, i)),
+              ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tab(BuildContext context, int i) {
+    final bool on = index == i;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onChanged(i),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        margin: const EdgeInsets.symmetric(horizontal: 2),
+        decoration: BoxDecoration(
+          // 选中项：浅紫胶囊底，比只改图标颜色更容易被看到
+          color: on ? AppColors.primarySoft : Colors.transparent,
+          borderRadius: BorderRadius.circular(19),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(
+              on ? _items[i].$1 : _items[i].$2,
+              size: 22,
+              color: on ? AppColors.primary : AppColors.faint,
+            ),
+            const SizedBox(height: 3),
+            Text(
+              _items[i].$3,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: AppText.tab,
+                fontWeight: on ? FontWeight.w600 : FontWeight.w400,
+                color: on ? AppColors.primary : AppColors.faint,
+              ),
+            ),
+          ],
         ),
       ),
     );

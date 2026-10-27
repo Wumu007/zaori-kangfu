@@ -74,6 +74,9 @@ class _RingingPageState extends State<RingingPage> {
     // 只有在这条还没被处理时才停铃（被处理时 handleMedAction 已停过）
     if (!AlarmBus.instance.isHandled(widget.payload)) {
       NativeBridge.ringStop();
+      // V1.14.0：原生响铃服务也要停 —— 否则前台通知一直挂在通知栏，
+      // 用户会以为这条提醒还等着他处理。
+      NativeBridge.stopRingingService();
     }
     super.dispose();
   }

@@ -16,11 +16,27 @@ class AppNav {
   static final GlobalKey<NavigatorState> navigatorKey =
       GlobalKey<NavigatorState>();
 
+  /// 上一次打开响铃页的时间与 payload（用于去重）
+  static String? _lastPayload;
+  static DateTime? _lastAt;
+
   /// 打开响铃页（通知主体被点击时）。
   /// 用 pushNamed 走 routes 表，与冷启动的 initialRoute 是同一条注册项。
+  ///
+  /// V1.14.0 去重：用户日志里一次点开触发了 4 条「点开原生通知」——
+  /// 原生侧重复回调会把同一个响铃页叠 4 层，返回要按 4 次。
+  /// 同一条提醒在 3 秒内只开一次。
   static void openRinging(String payload) {
-    navigatorKey.currentState
-        ?.pushNamed('/ringing', arguments: payload);
+    final DateTime now = DateTime.now();
+    final DateTime? last = _lastAt;
+    if (_lastPayload == payload &&
+        last != null &&
+        now.difference(last) < const Duration(seconds: 3)) {
+      return;
+    }
+    _lastPayload = payload;
+    _lastAt = now;
+    navigatorKey.currentState?.pushNamed('/ringing', arguments: payload);
   }
 }
 

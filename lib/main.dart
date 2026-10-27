@@ -97,6 +97,20 @@ Future<Widget> _buildApp() async {
     }
   }
 
+  // 冷启动：上次是在响铃通知上点了按钮（已服药/延后/跳过）进来的，
+  // 先把这个动作落库，再正常进 App —— 否则用户点了「已服药」，
+  // App 打开还显示「待确认」。
+  try {
+    final ({String action, String payload})? pending =
+        await NativeBridge.takePendingAction();
+    if (pending != null && pending.payload.isNotEmpty) {
+      AppLog.instance.notify('冷启动带通知动作', pending.action);
+      await handleMedAction(pending.payload, pending.action);
+    }
+  } catch (e) {
+    AppLog.instance.error('处理通知动作', e);
+  }
+
   // 热启动：App 已在运行时点原生通知 → 原生推事件，这里取 payload 并进响铃页
   NativeBridge.ringingRequests.listen((_) async {
     try {
@@ -106,6 +120,21 @@ Future<Widget> _buildApp() async {
         AppNav.openRinging(p!);
       }
     } catch (_) {}
+  });
+
+  // 热启动：用户在响铃通知上点了按钮 → 直接处理动作（不重复进响铃页）
+  NativeBridge.actionRequests.listen((_) async {
+    try {
+      final ({String action, String payload})? a =
+          await NativeBridge.takePendingAction();
+      if (a == null || a.payload.isEmpty) return;
+      AppLog.instance.notify('通知按钮动作', a.action);
+      await handleMedAction(a.payload, a.action);
+      await NativeBridge.ringStop();
+      await NativeBridge.stopRingingService();
+    } catch (e) {
+      AppLog.instance.error('处理通知按钮', e);
+    }
   });
 
   return MedReminderApp(initialRingingPayload: ringingPayload);

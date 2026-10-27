@@ -449,8 +449,8 @@ class ReminderScheduler {
 
   /// 把未来两天内的提醒整理成 JSON 交给原生
   ///
-  /// 只排两天：够覆盖「用户几天不打开 App」的常见场景，
-  /// 又不会让系统里的 alarm 数量失控（部分 ROM 对单应用 alarm 数量有限制）。
+  /// 排未来 7 天：既覆盖「用户几天不打开 App」，又不至于让系统里的
+  /// alarm 数量失控（部分 ROM 对单应用 alarm 数量有限制）。
   Future<int> _syncGuardChannel(List<Medication> meds) async {
     final DateTime now = DateTime.now();
     final DateTime today = DateTime(now.year, now.month, now.day);
@@ -458,7 +458,12 @@ class ReminderScheduler {
 
     for (final Medication med in meds) {
       if (!med.enabled) continue;
-      for (int i = 0; i < 2; i++) {
+      // V1.14.0：2 天 → 7 天。
+      //
+      // 原生通道是「后台唯一还可能响」的那条，只排 2 天意味着用户两天
+      // 没打开 App 之后就彻底没有兜底了。7 天足够覆盖出差、住院、
+      // 忘记打开 App 的常见情况，alarm 数量也在系统允许范围内。
+      for (int i = 0; i < 7; i++) {
         final DateTime day = today.add(Duration(days: i));
         if (!med.coversDay(day)) continue;
         for (final String hm in med.times) {
