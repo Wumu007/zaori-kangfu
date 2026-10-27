@@ -84,7 +84,8 @@
     <application
         android:label="早日康复"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:hasFragileUserData="true">
 
         <activity
             android:name=".MainActivity"

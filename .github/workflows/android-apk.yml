@@ -108,21 +108,50 @@ jobs:
         continue-on-error: true
         run: flutter test
 
-      - name: 配置正式签名（配了 Secrets 才执行）
-        if: ${{ env.KEYSTORE_BASE64 != '' }}
+      # ═══════════════════════════════════════════════════════════════
+      # 签名（V1.17.3 起固定）
+      # ═══════════════════════════════════════════════════════════════
+      # 之前这里只在配了 Secrets 时才签，而仓库一个 Secret 都没有 ——
+      # 于是每次都在全新 runner 上自动生成**随机 debug keystore**，
+      # 每次出的 APK 签名都不一样。手机因此无法覆盖安装，只能先卸载，
+      # 一卸载就把应用数据和 Android/media 里的数据保险箱全删了
+      #（用户「重装后数据全丢、每次要重填密钥」的真正原因）。
+      #
+      # 现在仓库里放了一份固定密钥（android/app/keystore.b64，
+      # 生成于一次性工作流），签名从此永远一致，可以覆盖安装。
+      # 配了 Secrets 时仍以 Secrets 为准（换密钥的余地留着）。
+      - name: 配置签名
         run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          PASS="ZaoriMed2026Pass"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+            STORE_PASS="$STORE_PASSWORD"
+            ALIAS="$KEY_ALIAS"
+            KEY_PASS="$KEY_PASSWORD"
+            echo "签名来源：Secrets"
+          elif [ -f android/app/keystore.b64 ]; then
+            base64 -d android/app/keystore.b64 > android/app/release.keystore
+            STORE_PASS="$PASS"
+            ALIAS="zaori"
+            KEY_PASS="$PASS"
+            echo "签名来源：仓库内固定密钥"
+          else
+            echo "::error::没有可用的签名密钥"
+            exit 1
+          fi
           cat > android/key.properties <<EOF
           storeFile=release.keystore
-          storePassword=$STORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
+          storePassword=$STORE_PASS
+          keyAlias=$ALIAS
+          keyPassword=$KEY_PASS
           EOF
-          echo "已启用正式签名，别名：$KEY_ALIAS"
+          echo "=== 本次签名证书指纹（应与历次一致）==="
+          keytool -list -v -keystore android/app/release.keystore \
+            -storepass "$STORE_PASS" -alias "$ALIAS" | grep -E "SHA1|SHA256" || true
 
       - name: 编译 Release APK
         run: |
-          flutter build apk --release --target-platform android-arm,android-arm64 --build-name=1.17.2 --build-number=${GITHUB_RUN_NUMBER}
+          flutter build apk --release --target-platform android-arm,android-arm64 --build-name=1.17.3 --build-number=${GITHUB_RUN_NUMBER}
           echo "--- 产物 ---"
           ls -lh build/app/outputs/flutter-apk/
 
