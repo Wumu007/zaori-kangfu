@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app.dart';
@@ -5,6 +7,7 @@ import 'models/medication.dart';
 import 'services/app_log.dart';
 import 'services/med_action_handler.dart';
 import 'services/medication_repository.dart';
+import 'services/in_app_reminder_watcher.dart';
 import 'services/native_bridge.dart';
 import 'services/reminder_scheduler.dart';
 import 'services/vault_service.dart';
@@ -99,7 +102,33 @@ Future<void> main() async {
   final bool guard = await NativeBridge.startGuard();
   log.notify('后台守护服务', guard ? '已启动' : '启动失败或被系统拒绝');
 
+  // ═══════════════════════════════════════════════════════════════
+  // V1.16.0：不把准时这件事完全交给系统闹钟
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // 用户日志里 10 秒的测试分别延迟 31 / 10 / 22 秒（电池白名单=false，
+  // vivo 会对齐第三方闹钟）。只要 App 进程还活着，就由下面这层
+  // 自己核对到点并弹出 —— 系统准时它先响，系统不准它兜底。
+  void fireRinging(String payload, String title) {
+    log.notify('应用内弹出提醒', title);
+    // 走和真闹钟同一条链路：前台服务负责铃声 + 通知 + 唤醒锁
+    unawaited(NativeBridge.startRingingService(
+      payload: payload,
+      title: title,
+      body: '到服药时间了，点开处理',
+    ));
+    NativeBridge.ringStart();
+    AppNav.openRinging(payload);
+  }
+
+  ReminderScheduler.instance.onForceRing = fireRinging;
+  InAppReminderWatcher.instance.onFire =
+      (String payload, String name) => fireRinging(payload, name);
+
   runApp(await _buildApp());
+
+  // 必须等 runApp 之后才有 navigator 可用，放这里启动
+  unawaited(InAppReminderWatcher.instance.start());
 }
 
 /// 组装根 Widget；同时处理「冷启动来自服药提醒通知」的场景

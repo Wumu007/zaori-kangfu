@@ -412,6 +412,16 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                     "isRingingServiceActive" -> result.success(RingingService.active)
+                    // 应用内自检触发时也走响铃服务：铃声/通知/唤醒锁一致，
+                    // 不然「兜底」和「真闹钟」两套表现
+                    "ringingServiceStart" -> {
+                        val payload = call.argument<String>("payload") ?: ""
+                        val title = call.argument<String>("title") ?: "该吃药了"
+                        val body = call.argument<String>("body") ?: ""
+                        val id = call.argument<Int>("id") ?: 990002
+                        RingingService.start(this, id, title, body, payload)
+                        result.success(true)
+                    }
                     "ringingServiceStop" -> {
                         RingingService.stop(this, "Dart 请求")
                         result.success(true)

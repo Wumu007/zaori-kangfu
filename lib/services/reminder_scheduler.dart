@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -60,6 +61,10 @@ class PermissionReport {
 ///   这样既不用一次排几年（系统有上限、也浪费），又保证不断档。
 /// - 通知 id 用 (计划日期 + 时间点) 稳定生成，重复排期会覆盖而不是叠加。
 class ReminderScheduler {
+  /// 测试提醒的「应用内兜底」：系统闹钟没按时触发时，由这里自己弹。
+  /// main.dart 注入（那里才能拿到 AppNav）。
+  void Function(String payload, String title)? onForceRing;
+
   ReminderScheduler._();
   static final ReminderScheduler instance = ReminderScheduler._();
 
@@ -321,6 +326,26 @@ class ReminderScheduler {
       '测试提醒已排',
       '$seconds 秒后（原生闹钟${ok ? '已排' : '排程失败'}）',
     );
+
+    // ═══════════════════════════════════════════════════════════════
+    // V1.16.0：兜底定时器
+    // ═══════════════════════════════════════════════════════════════
+    //
+    // 用户日志里三次 10 秒测试分别延迟 31 / 10 / 22 秒 —— 系统在延后
+    // 我们的精确闹钟（电池白名单=false，vivo 会做对齐）。
+    // 测试必须可信：多等 4 秒还没见到响铃服务在跑，就由 App 自己弹，
+    // 不再干等系统。
+    Timer(Duration(seconds: seconds + 4), () async {
+      try {
+        if (await NativeBridge.isRingingServiceActive) return; // 系统已响
+        AppLog.instance.notify(
+          '测试提醒兜底触发',
+          '系统闹钟未在 ${seconds + 4} 秒内触发，由应用内接管',
+        );
+        onForceRing?.call(payload, '测试提醒');
+      } catch (_) {}
+    });
+
     return ok;
   }
 

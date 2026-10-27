@@ -469,6 +469,24 @@ class NativeBridge {
     }
   }
 
+  /// 由应用内自检主动启动响铃（铃声 + 通知 + 唤醒锁，与真闹钟一致）
+  static Future<void> startRingingService({
+    required String payload,
+    required String title,
+    String body = '',
+    int id = 990002,
+  }) async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod<void>('ringingServiceStart', <String, Object?>{
+        'payload': payload,
+        'title': title,
+        'body': body,
+        'id': id,
+      });
+    } catch (_) {}
+  }
+
   /// 让原生停掉响铃服务（页面已处理完时用）
   static Future<void> stopRingingService() async {
     if (!supported) return;

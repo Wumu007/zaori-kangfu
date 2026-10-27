@@ -315,7 +315,12 @@ class RingingService : Service() {
             .setContentIntent(openPi)
             // 锁屏/息屏时由系统直接把界面顶上来（Android 14+ 需要用户授权
             // 「全屏通知」，设置页有入口；无授权时至少是横幅 + 铃声）
-            .setFullScreenIntent(openPi, true)
+            //
+            // V1.16.0：界面已经在前台时不再要全屏意图。
+            // 用户日志里一次提醒会出现 3 条「点开原生通知」—— 因为
+            // fullScreenIntent 会把同一个 Intent 再投一次，加上服务自己
+            // startActivity，等于重复推送，响铃页被叠层、返回要按多次。
+            .setFullScreenIntent(openPi, !MainActivity.isVisible)
 
         builder.addAction(action("已服药", "taken", payload, 9201))
         builder.addAction(action("延后 10 分钟", "snooze", payload, 9202))
