@@ -22,7 +22,7 @@ import java.io.File
  * 卸载即删。
  *
  * 系统级的 Auto Backup 在国产 ROM + 侧载安装上基本不生效，所以这里
- * 自己写一份到 **Android/media/<包名>/**：
+ * 自己写一份到 Android/media/<包名>/ 目录：
  *
  * - 该目录在 Android 11+ 属于「媒体目录」，应用可以读写自己包名下的
  *   子目录，**不需要任何存储权限**；
