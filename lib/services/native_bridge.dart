@@ -597,6 +597,37 @@ class NativeBridge {
     } catch (_) {}
   }
 
+  /// 标记「这条提醒已经处理过」（V1.17.2）
+  ///
+  /// 处理完之后那条 ongoing 通知可能还没从通知栏消失，用户手快又点了
+  /// 一下 —— 原生 onNewIntent 会当成新的到点又 ringStart。打上标记后，
+  /// 同一条 payload 再被点开就只展示、不出声。3 天后自动过期。
+  ///
+  /// 注意：**「稍后提醒」不要调用这个**，那条本来就是希望再叫一次。
+  static Future<void> markRingHandled(String payload) async {
+    if (!supported || payload.isEmpty) return;
+    try {
+      await _ch.invokeMethod<bool>(
+        'markRingHandled',
+        <String, Object?>{'payload': payload},
+      );
+    } catch (_) {}
+  }
+
+  /// 这条是否已被标记为处理过
+  static Future<bool> isRingHandled(String payload) async {
+    if (!supported || payload.isEmpty) return false;
+    try {
+      return await _ch.invokeMethod<bool>(
+            'isRingHandled',
+            <String, Object?>{'payload': payload},
+          ) ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<bool> get isRinging async {
     if (!supported) return false;
     try {

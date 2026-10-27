@@ -42,9 +42,15 @@ Future<void> handleMedAction(String payload, String actionId) async {
   if (planned == null) return;
 
   // 「测试提醒」不写库：payload 里带 test 标记，处理完只停铃收尾
+  //
+  // V1.17.2：这里少了一步 stopRingingService —— 只停了 MediaPlayer。
+  // 结果前台服务一直在跑、ongoing 通知一直挂在通知栏，用户又去点它，
+  // 原生 onNewIntent 就再响一次，看起来就是「怎么都停不下来」。
   if (data['test'] == '1') {
     AlarmBus.instance.handle(payload);
+    await NativeBridge.markRingHandled(payload);
     await NativeBridge.ringStop();
+    await NativeBridge.stopRingingService();
     return;
   }
 
@@ -64,7 +70,15 @@ Future<void> handleMedAction(String payload, String actionId) async {
   final int totalSnooze = existing?.snoozeMinutes ?? 0;
 
   if (actionId == NotificationActionIds.taken) {
-    if (existing?.status == IntakeStatus.taken) return;
+    if (existing?.status == IntakeStatus.taken) {
+      // V1.17.2：重复点「已服药」时不能再直接 return —— 那样铃声会一直响。
+      // 库不重复写，但收尾三件事（标记 / 停铃 / 停服务）必须做完。
+      AlarmBus.instance.handle(payload);
+      await NativeBridge.markRingHandled(payload);
+      await NativeBridge.ringStop();
+      await NativeBridge.stopRingingService();
+      return;
+    }
     await repo.log(
       medicationId: medId,
       plannedTime: planned,
@@ -121,6 +135,13 @@ Future<void> handleMedAction(String payload, String actionId) async {
 
   // 收尾 2：通知响铃页这条已被处理 + 停循环铃声
   AlarmBus.instance.handle(payload);
+  // 「已服药 / 跳过」：这条到此为止，之后再被点开也不要再响。
+  // 「稍后」相反 —— 它本来就要再叫一次，绝不能打这个标记，
+  // 否则 5 分钟后那条就哑了。
+  if (actionId == NotificationActionIds.taken ||
+      actionId == NotificationActionIds.skip) {
+    await NativeBridge.markRingHandled(payload);
+  }
   await NativeBridge.ringStop();
   // 收尾 3：连前台响铃服务一起停。
   // 只停 MediaPlayer 的话，ongoing 通知还挂在通知栏上，用户会以为没处理掉。

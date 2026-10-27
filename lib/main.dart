@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'app.dart';
 import 'models/medication.dart';
+import 'services/alarm_bus.dart';
 import 'services/app_log.dart';
 import 'services/med_action_handler.dart';
 import 'services/medication_repository.dart';
@@ -157,8 +158,18 @@ Future<Widget> _buildApp() async {
     try {
       final String? nativePayload = await NativeBridge.takePendingPayload();
       if (_isRingingPayload(nativePayload)) {
-        ringingPayload = nativePayload;
-        AppLog.instance.notify('冷启动来自原生通知', '通道二，进入响铃页');
+        final String np = nativePayload!;
+        // V1.17.2：处理过的提醒被点开（原生侧已打持久标记）→ 不进响铃页
+        final bool done = AlarmBus.instance.isHandled(np) ||
+            await NativeBridge.isRingHandled(np);
+        if (done) {
+          AppLog.instance.notify('冷启动：提醒已处理', '直接进主界面，不响铃');
+          await NativeBridge.ringStop();
+          await NativeBridge.stopRingingService();
+        } else {
+          ringingPayload = np;
+          AppLog.instance.notify('冷启动来自原生通知', '通道二，进入响铃页');
+        }
       }
     } catch (e) {
       AppLog.instance.error('读取原生 payload', e);
@@ -183,10 +194,20 @@ Future<Widget> _buildApp() async {
   NativeBridge.ringingRequests.listen((_) async {
     try {
       final String? p = await NativeBridge.takePendingPayload();
-      if (_isRingingPayload(p)) {
-        AppLog.instance.notify('点开原生通知', '热启动进响铃页');
-        AppNav.openRinging(p!);
+      if (!_isRingingPayload(p)) return;
+      final String payload = p!;
+      // V1.17.2：这条已经处理过 —— 通知还没从通知栏消失时手快又点了一下。
+      // 这时不能再进响铃页（进去就会重新 ringStart），只把残留的
+      // 声音和 ongoing 通知一并收掉。
+      if (AlarmBus.instance.isHandled(payload) ||
+          await NativeBridge.isRingHandled(payload)) {
+        AppLog.instance.notify('点开已处理的提醒', '只收尾，不进响铃页');
+        await NativeBridge.ringStop();
+        await NativeBridge.stopRingingService();
+        return;
       }
+      AppLog.instance.notify('点开原生通知', '热启动进响铃页');
+      AppNav.openRinging(payload);
     } catch (_) {}
   });
 

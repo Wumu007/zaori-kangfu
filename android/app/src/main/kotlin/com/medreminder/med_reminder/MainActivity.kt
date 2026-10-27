@@ -86,13 +86,55 @@ class MainActivity : FlutterActivity() {
         @Volatile private var player: MediaPlayer? = null
         @Volatile private var vibrator: Vibrator? = null
 
-        /** 停止响铃。任何地方（Activity / Dart / 通知按钮回调）都可安全调用 */
+        /**
+         * 响铃代号（V1.17.2）
+         *
+         * prepareAsync 是异步的：点下「已处理」的那一刻，播放器往往还在
+         * **准备中**。这时停掉，准备好的回调照样会来。每次停铃把代号 +1，
+         * 回调里对不上就说明这次响铃已被取消，直接释放、绝不出声。
+         */
+        @Volatile private var ringGeneration: Int = 0
+
+        /**
+         * 停止响铃。任何地方（Activity / Dart / 通知按钮回调）都可安全调用
+         *
+         * ═══════════════════════════════════════════════════════════
+         * V1.17.2：这里原来一行吞掉了全部收尾动作（用户反馈「点了已处理
+         * 铃声还在响、只有再点一次通知才停」）
+         * ═══════════════════════════════════════════════════════════
+         *
+         * 旧代码是：
+         *     try { player?.stop(); player?.release() } catch (_: Exception) {}
+         *
+         * MediaPlayer 在 **Preparing 状态** 调 stop() 会抛
+         * IllegalStateException。它和 release() 写在同一个 try 里，
+         * 异常一抛就直接跳到 catch —— **release() 从未执行**。
+         *
+         * 后果是三个一起发生：
+         * 1. 播放器没被释放，prepareAsync 完成后照样 start() 出声；
+         * 2. player 变量已被置空，**再没有任何句柄能停掉这个声音**；
+         * 3. 用户每点一次通知就多一个这样的幽灵播放器，越点越响。
+         *
+         * 现在：代号先作废在途回调，listener 全部摘掉，stop 与 release
+         * 各自独立 try，任何一个失败都不影响另一个执行。
+         */
         @JvmStatic fun ringStop() {
-            try { player?.stop(); player?.release() } catch (_: Exception) {}
+            ringGeneration++
+            val p = player
             player = null
+            if (p != null) {
+                try { p.setOnPreparedListener(null) } catch (_: Exception) {}
+                try { p.setOnErrorListener(null) } catch (_: Exception) {}
+                try { p.setOnCompletionListener(null) } catch (_: Exception) {}
+                // 两行必须分开：stop() 在 Preparing 状态抛异常时，
+                // 不能把 release() 一起带走
+                try { if (p.isPlaying) p.stop() } catch (_: Exception) {}
+                try { p.release() } catch (_: Exception) {}
+            }
             try { vibrator?.cancel() } catch (_: Exception) {}
             vibrator = null
             ringingPayload = null
+            NativeLog.log("MainActivity", "ringStop 执行（gen=$ringGeneration）")
         }
 
         /**
@@ -124,6 +166,9 @@ class MainActivity : FlutterActivity() {
             // 清理上一次可能残留的播放器（这里会顺手把 ringingPayload 清空，
             // 所以真正的赋值必须放在它之后）
             ringStop()
+            // 记下这次响铃的代号：prepare 期间若被 ringStop 打断，
+            // 回调里的代号就对不上，不再出声
+            val gen = ringGeneration
             if (payload != null) ringingPayload = payload
 
             val uri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
@@ -140,9 +185,13 @@ class MainActivity : FlutterActivity() {
                 )
                 p.isLooping = true
                 p.setOnPreparedListener { mp ->
-                    try {
-                        mp.start()
-                    } catch (_: Exception) {}
+                    // 准备期间已经被停掉（用户点了「已处理」/离开页面）：
+                    // 绝不能 start，否则就是那个「停不掉的幽灵铃声」
+                    if (gen != ringGeneration) {
+                        try { mp.release() } catch (_: Exception) {}
+                    } else {
+                        try { mp.start() } catch (_: Exception) {}
+                    }
                 }
                 p.setOnErrorListener { mp, _, _ ->
                     try { mp.release() } catch (_: Exception) {}
@@ -152,8 +201,10 @@ class MainActivity : FlutterActivity() {
                 player = p
                 // 关键：异步准备，不阻塞 UI 线程
                 p.prepareAsync()
-            } catch (_: Exception) {
+                NativeLog.log("MainActivity", "ringStart 已发起（gen=$gen）")
+            } catch (e: Exception) {
                 player = null
+                NativeLog.log("MainActivity", "ringStart 失败: ${e.message}")
             }
 
             // 震动：长-短-长循环（与通知渠道节奏一致）
@@ -380,6 +431,48 @@ class MainActivity : FlutterActivity() {
             pendingPayload = null
             return v
         }
+
+        // ═══════════════════════════════════════════════════════════════
+        // 「这条提醒已经处理过了」标记（V1.17.2）
+        // ═══════════════════════════════════════════════════════════════
+        //
+        // 用户点了「已处理」之后，那条 ongoing 通知可能还没从通知栏消失
+        //（ROM 有延迟，或者用户手快又点了一下）。再点时原生 onNewIntent
+        // 会当成一次新的到点，又 ringStart —— 用户看到的就是
+        //「只有再点一次这条消息才会停/才会又响」这种反直觉的行为。
+        //
+        // 处理动作发生时由 Dart 打一个标记，onNewIntent / onCreate 见到
+        // 同一条就不再响。注意「稍后提醒」**不**打标记 —— 那条本来就要
+        // 再叫一次。标记 3 天后自动过期，避免无限堆积。
+        private const val PREFS_HANDLED = "ring_handled_v1"
+        private const val HANDLED_TTL_MS = 3L * 24 * 3600 * 1000
+
+        @JvmStatic
+        fun markRingHandled(context: Context, payload: String) {
+            if (payload.isEmpty()) return
+            try {
+                val sp = context.getSharedPreferences(PREFS_HANDLED, Context.MODE_PRIVATE)
+                val now = System.currentTimeMillis()
+                val e = sp.edit()
+                for (k in sp.all.keys) {
+                    val t = (sp.all[k] as? Long) ?: 0L
+                    if (now - t > HANDLED_TTL_MS) e.remove(k)
+                }
+                e.putLong(payload, now)
+                e.apply()
+                NativeLog.log("MainActivity", "已标记处理 ${payload.take(40)}")
+            } catch (_: Exception) {}
+        }
+
+        @JvmStatic
+        fun isRingHandled(context: Context, payload: String): Boolean {
+            return try {
+                context.getSharedPreferences(PREFS_HANDLED, Context.MODE_PRIVATE)
+                    .contains(payload)
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     private var pendingSpeech: MethodChannel.Result? = null
@@ -567,6 +660,14 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                     "takePendingPayload" -> result.success(takePendingPayload())
+                    // V1.17.2：处理完一条提醒后打标记，之后同一条再被点开不再响铃
+                    "markRingHandled" -> {
+                        markRingHandled(this, call.argument<String>("payload") ?: "")
+                        result.success(true)
+                    }
+                    "isRingHandled" -> result.success(
+                        isRingHandled(this, call.argument<String>("payload") ?: "")
+                    )
                     else -> result.notImplemented()
                 }
             }
@@ -802,8 +903,15 @@ class MainActivity : FlutterActivity() {
         // 到这里说明就是被闹钟拉起来的 —— **立刻响铃**，不要等 Flutter
         // 引擎起来再响（那要 2–4 秒，用户会觉得"没响"）。
         if (!bootPayload.isNullOrEmpty()) {
-            NativeLog.log("MainActivity", "由闹钟直接拉起，立即响铃")
-            ringStart(this, bootPayload!!)
+            val boot = bootPayload!!
+            if (isRingHandled(this, boot)) {
+                // 处理过的提醒又被点开（通知还没消失时手快又点了一次）：
+                // 只把 payload 交给 Dart 展示，不再出声
+                NativeLog.log("MainActivity", "冷启动：这条已处理过，不响铃")
+            } else {
+                NativeLog.log("MainActivity", "由闹钟直接拉起，立即响铃")
+                ringStart(this, boot)
+            }
         }
     }
 
@@ -839,8 +947,12 @@ class MainActivity : FlutterActivity() {
         // 热启动被闹钟拉起：同样立刻响铃（还没进响铃页）
         val newPayload = intent.getStringExtra(EXTRA_PAYLOAD)
         if (newPayload != null && intent.getStringExtra(EXTRA_ACTION) == null) {
-            NativeLog.log("MainActivity", "onNewIntent 带 payload，立即响铃")
-            ringStart(this, newPayload)
+            if (isRingHandled(this, newPayload)) {
+                NativeLog.log("MainActivity", "热启动：这条已处理过，不响铃")
+            } else {
+                NativeLog.log("MainActivity", "onNewIntent 带 payload，立即响铃")
+                ringStart(this, newPayload)
+            }
         }
 
         val action = intent.getStringExtra(EXTRA_ACTION)

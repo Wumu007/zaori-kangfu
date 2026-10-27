@@ -54,14 +54,18 @@ class _RingingPageState extends State<RingingPage> {
   void initState() {
     super.initState();
     _parse();
+    // V1.17.2：先判断「这条是不是已经处理过」再决定要不要响。
+    // 以前是无条件 ringStart()，之后才发现已处理、再去关 —— 中间这段
+    // 就出现了用户说的「点一下这条消息，铃声又响了」。
+    final bool handled = AlarmBus.instance.isHandled(widget.payload);
     // 没有有效 payload（例如冷启动路由没带上参数）时不要响铃，
     // 否则用户会看到一个响个不停的空白页
-    if (_valid) {
+    if (_valid && !handled) {
       NativeBridge.ringStart();
       NativeBridge.keepScreenOn(true);
     }
     // 这条已经被处理过（通知栏直接点的按钮）？→ 立即退出，不响铃
-    if (AlarmBus.instance.isHandled(widget.payload)) {
+    if (handled) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _close());
     }
     AlarmBus.instance.handled.addListener(_onHandled);
@@ -71,13 +75,15 @@ class _RingingPageState extends State<RingingPage> {
   void dispose() {
     AlarmBus.instance.handled.removeListener(_onHandled);
     NativeBridge.keepScreenOn(false);
-    // 只有在这条还没被处理时才停铃（被处理时 handleMedAction 已停过）
-    if (!AlarmBus.instance.isHandled(widget.payload)) {
-      NativeBridge.ringStop();
-      // V1.14.0：原生响铃服务也要停 —— 否则前台通知一直挂在通知栏，
-      // 用户会以为这条提醒还等着他处理。
-      NativeBridge.stopRingingService();
-    }
+    // V1.17.2：**无条件**收尾，不再区分有没有处理过。
+    //
+    // 旧逻辑是「已处理就跳过，反正 handleMedAction 已经停过」——
+    // 但测试提醒那条分支漏了 stopRingingService，前台服务与通知
+    // 就一直留着，用户点一次通知响一次，怎么都收不了尾。
+    // 离开响铃页就不该再有任何声音或残留通知；这两步都是幂等的，
+    // 重复调用没有副作用。
+    NativeBridge.ringStop();
+    NativeBridge.stopRingingService();
     super.dispose();
   }
 

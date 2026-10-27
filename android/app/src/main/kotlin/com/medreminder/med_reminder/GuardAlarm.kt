@@ -382,6 +382,36 @@ class GuardAlarmReceiver : BroadcastReceiver() {
             return
         }
 
+        // ═══════════════════════════════════════════════════════════
+        // 测试提醒：不要在通知栏留东西（V1.17.2，用户明确要求）
+        // ═══════════════════════════════════════════════════════════
+        //
+        // 测试的目的是确认「到点会不会自己弹出来、会不会响」，
+        // 通知栏里多一条「测试提醒」没有任何用处，反而会被反复点开
+        // （点一次就重新响一次）。所以：
+        // - 界面已经拉起并且在响同一条 → 直接收工，不发通知也不起服务；
+        // - 界面没起来（锁屏/ROM 拦了）→ 仍然走兜底，否则用户会
+        //   以为测试失败，而其实只是没弹出来。
+        val isTest = payload.contains("\"test\":\"1\"") ||
+            payload.contains("\"test\": \"1\"")
+        if (isTest) {
+            val alreadyRinging = MainActivity.isVisible &&
+                MainActivity.ringingPayload == payload
+            if (alreadyRinging) {
+                NativeLog.log(
+                    "GuardAlarmReceiver",
+                    "测试提醒：界面已在响，跳过通知与响铃服务",
+                )
+                return
+            }
+            NativeLog.log(
+                "GuardAlarmReceiver",
+                "测试提醒：界面没起来，走兜底（通知 + 响铃服务）",
+            )
+            RingingService.start(context, id, title, body, payload)
+            return
+        }
+
         // 1) 通知栏保底（服务起不来时用户至少能看到）
         GuardAlarm.notifyReminder(context, id, title, body, payload)
 
