@@ -1,7 +1,7 @@
 name: med_reminder
 description: 早日康复 App（V2）—— 语音口述录入用药计划、到点本地提醒、按日期回看服药记录，纯本地、不需要登录
 publish_to: 'none'
-version: 1.17.0+18
+version: 1.17.1+19
 
 environment:
   sdk: '>=3.3.0 <4.0.0'

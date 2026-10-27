@@ -65,6 +65,16 @@ class MainActivity : FlutterActivity() {
         /** 用户点了通知按钮时带的动作：taken / snooze / skip */
         const val EXTRA_ACTION = "med_action"
 
+        /**
+         * 当前正在响铃的那条提醒的 payload（V1.17.1）
+         *
+         * 用来判断「主路径（闹钟直接拉起界面）是不是已经处理过了」。
+         * 2 秒后的兜底广播起 RingingService 时，若这里的 payload 与广播
+         * 带的一致，说明界面上已经在响，不必再 startActivity 拉一次 ——
+         * 否则响铃页会叠两层，用户返回要按两次（V1.15.0 修过的老问题）。
+         */
+        @Volatile internal var ringingPayload: String? = null
+
         @Volatile internal var pendingPayload: String? = null
 
         // ═══════════════════════════════════════════════════════════════
@@ -82,6 +92,7 @@ class MainActivity : FlutterActivity() {
             player = null
             try { vibrator?.cancel() } catch (_: Exception) {}
             vibrator = null
+            ringingPayload = null
         }
 
         /**
@@ -99,11 +110,21 @@ class MainActivity : FlutterActivity() {
          * 现在改用 `prepareAsync()` + `setOnPreparedListener`：
          * 主线程立刻返回，铃声在后台解码好再响，UI 不会被堵。
          */
-        @JvmStatic fun ringStart(context: Context) = ringStartImpl(context)
+        @JvmStatic fun ringStart(context: Context) = ringStartImpl(context, null)
 
-        private fun ringStartImpl(context: Context) {
-            if (player != null) return // 已经在响，避免叠加
+        /** 带 payload 的版本：用于让 RingingService 知道「现在响的是哪一条」 */
+        @JvmStatic fun ringStart(context: Context, payload: String) = ringStartImpl(context, payload)
+
+        private fun ringStartImpl(context: Context, payload: String?) {
+            if (player != null) {
+                // 已经在响：只补记 payload，不重复播
+                if (payload != null) ringingPayload = payload
+                return
+            }
+            // 清理上一次可能残留的播放器（这里会顺手把 ringingPayload 清空，
+            // 所以真正的赋值必须放在它之后）
             ringStop()
+            if (payload != null) ringingPayload = payload
 
             val uri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
@@ -782,7 +803,7 @@ class MainActivity : FlutterActivity() {
         // 引擎起来再响（那要 2–4 秒，用户会觉得"没响"）。
         if (!bootPayload.isNullOrEmpty()) {
             NativeLog.log("MainActivity", "由闹钟直接拉起，立即响铃")
-            ringStart(this)
+            ringStart(this, bootPayload!!)
         }
     }
 
@@ -819,7 +840,7 @@ class MainActivity : FlutterActivity() {
         val newPayload = intent.getStringExtra(EXTRA_PAYLOAD)
         if (newPayload != null && intent.getStringExtra(EXTRA_ACTION) == null) {
             NativeLog.log("MainActivity", "onNewIntent 带 payload，立即响铃")
-            ringStart(this)
+            ringStart(this, newPayload)
         }
 
         val action = intent.getStringExtra(EXTRA_ACTION)

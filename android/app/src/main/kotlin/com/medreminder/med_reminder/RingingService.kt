@@ -161,6 +161,15 @@ class RingingService : Service() {
     private val launchTask = object : Runnable {
         override fun run() {
             if (!active) return
+            // V1.17.1：主路径（闹钟的 operation 是 Activity）可能已经把界面
+            // 顶起来，并且正在响同一条提醒。这时候再 startActivity 一次，
+            // 就是第二个响铃页叠在上面 —— 用户要按两次返回才出得来
+            //（V1.15.0 修过的老问题，V1.17.0 改成双通道后又冒出来了）。
+            // 判断依据是「界面可见 + 正在响的就是这一条」。
+            if (MainActivity.isVisible && MainActivity.ringingPayload == currentPayload) {
+                NativeLog.log("RingingService", "界面已在响同一条提醒，跳过重复拉起")
+                return
+            }
             if (launchAttempt >= 2) return
             if (launchAttempt == 1 && MainActivity.isVisible) return
             launchAttempt++
@@ -201,7 +210,7 @@ class RingingService : Service() {
 
         // 1) 先响起来（不依赖界面上不上得来）
         try {
-            MainActivity.ringStart(this)
+            MainActivity.ringStart(this, payload)
             NativeLog.log("RingingService", "循环铃声已启动")
         } catch (e: Exception) {
             NativeLog.log("RingingService", "铃声启动失败: ${e.message}")
@@ -472,8 +481,12 @@ object NativeLog {
         return try {
             val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val a = sp.getString(KEY_ACTION, null)
-            if (a != null) sp.edit().clear().apply()
+            // V1.17.1：先把 payload 读出来再 clear。
+            // 旧代码是 clear() 之后才 getString(KEY_PAYLOAD) —— 那时键已经没了，
+            // 永远返回空串，于是「用户点了已服药」这个动作传到 Dart 后
+            // 定位不到是哪一条提醒，只能算「有一条被点了」。
             val p = sp.getString(KEY_PAYLOAD, "") ?: ""
+            if (a != null) sp.edit().clear().apply()
             if (a == null) null else "$a\u0001$p"
         } catch (_: Exception) {
             null

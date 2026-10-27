@@ -52,9 +52,17 @@ object GuardAlarm {
      */
     private val CHANNEL_ID: String get() = RingingService.CHANNEL_ID
 
-    /** 保存 Dart 传来的排程表（JSON 数组字符串）并立即全部重排 */
+    /**
+     * 保存 Dart 传来的排程表（JSON 数组字符串）并立即全部重排。
+     *
+     * V1.17.1：顺序必须是「按旧表取消 → 写新表 → 重排」。
+     * 上一版先写新表再排，旧 id 就此失联：用户改了服药时间或删了药，
+     * 旧时间那条闹钟还留在系统里，到点照样把界面顶起来 —— 而新表里
+     * 已经没有它，谁也取消不掉。
+     */
     @JvmStatic
     fun setSchedule(context: Context, json: String) {
+        cancelAll(context)
         try {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(KEY, json).apply()
@@ -62,7 +70,17 @@ object GuardAlarm {
         scheduleAll(context)
     }
 
-    /** 取消我们排的全部 alarm */
+    /**
+     * 取消我们排的全部 alarm。
+     *
+     * V1.17.1 关键修复：V1.17.0 把闹钟的 operation 从广播改成了界面，
+     * 但这里只按广播那条去 cancel —— 类型不同的 PendingIntent 匹配不上，
+     * **界面那条根本取消不掉**。结果是改时间/删药后，旧闹钟继续在旧
+     * 时间拉起界面响铃，最长残留 7 天。
+     *
+     * 现在三种都取消：广播那条（setExactAndAllowWhileIdle 的 operation）、
+     * 界面那条（setAlarmClock 的 operation）、以及锁屏显示的 showIntent。
+     */
     @JvmStatic
     fun cancelAll(context: Context) {
         try {
@@ -70,8 +88,10 @@ object GuardAlarm {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             for (i in 0 until arr.length()) {
                 val id = arr.getJSONObject(i).optInt("id", 0)
-                val pi = buildPending(context, id, "", "", "", "", 0)
-                am.cancel(pi)
+                if (id == 0) continue
+                try { am.cancel(buildPending(context, id, "", "", "", "", 0)) } catch (_: Exception) {}
+                try { am.cancel(buildActivityPending(context, id, "")) } catch (_: Exception) {}
+                try { am.cancel(buildShowIntent(context, id)) } catch (_: Exception) {}
             }
         } catch (_: Exception) {}
     }
@@ -101,15 +121,7 @@ object GuardAlarm {
                 val name = o.optString("name", "")
                 val broadcastPi = buildPending(context, id, title, body, payload, name, at)
                 val activityPi = buildActivityPending(context, id, payload)
-
-                val showIntent = PendingIntent.getActivity(
-                    context,
-                    id,
-                    Intent(context, MainActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    },
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                )
+                val showIntent = buildShowIntent(context, id)
                 try {
                     // 主：闹钟到点直接拉起界面（绕过速冻）
                     am.setAlarmClock(AlarmManager.AlarmClockInfo(at, showIntent), activityPi)
@@ -151,13 +163,7 @@ object GuardAlarm {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val broadcastPi = buildPending(context, id, title, body, payload, name, at)
             val activityPi = buildActivityPending(context, id, payload)
-            val showIntent = PendingIntent.getActivity(
-                context,
-                id,
-                Intent(context, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
+            val showIntent = buildShowIntent(context, id)
             am.setAlarmClock(AlarmManager.AlarmClockInfo(at, showIntent), activityPi)
             // 备用广播：界面起不来时仍要发通知并响铃
             runCatching {
@@ -209,6 +215,24 @@ object GuardAlarm {
         return PendingIntent.getActivity(
             context,
             id or 0x20000000,
+            i,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /**
+     * 锁屏上那个闹钟图标点开时用的 Intent。
+     *
+     * 和主 operation 用同一个 requestCode 会互相覆盖，所以单独抽出来，
+     * 三处（排程 / 测试 / 取消）都用它，保证 cancel 时能精确匹配。
+     */
+    private fun buildShowIntent(context: Context, id: Int): PendingIntent {
+        val i = Intent(context, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        return PendingIntent.getActivity(
+            context,
+            id,
             i,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -304,7 +328,11 @@ object GuardAlarm {
                 .setPriority(Notification.PRIORITY_MAX)
                 .setAutoCancel(true)
                 .setContentIntent(pi)
-                .setFullScreenIntent(pi, true)
+                // V1.17.1：界面已经在前台时不要再要全屏意图。
+                // V1.16.0 只改了 RingingService 那份通知，这里一直写死 true，
+                // 于是主路径（界面已被闹钟拉起）之后 2 秒广播又发一次通知，
+                // 全屏意图把同一个 Intent 再投一次 → 响铃页叠层、返回要按两次。
+                .setFullScreenIntent(pi, !MainActivity.isVisible)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setWhen(System.currentTimeMillis())
             // 注意：Android 8+ 上 setSound/setVibrate 对已存在的渠道无效，
