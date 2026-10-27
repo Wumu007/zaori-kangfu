@@ -1,19 +1,20 @@
 # 早日康复 · Android APK 云端编译
 #
 # 本仓库只有这一个 Flutter 工程，仓库根目录 = 工程根目录。
-# 触发方式：推送到 main，或在 Actions 页面点「Run workflow」手动触发。
+# 触发方式：推送到 main、推 v* 标签（会自动发布 Release），或手动触发。
 name: 早日康复 · Build APK
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
 
-# 只读代码，产物通过 artifact 下载，不需要写权限
+# 推 tag 时要创建 Release 并挂 APK，需要写权限
 permissions:
-  contents: read
+  contents: write
 
 # 同一分支只保留最新一次构建，连续提交时不浪费额度
 concurrency:
@@ -149,3 +150,31 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 90
+
+      # ═══════════════════════════════════════════════════════════════
+      # 推 v* 标签时自动发 Release，把 APK 直接挂上去（V1.17.1 新增）
+      # ═══════════════════════════════════════════════════════════════
+      # 以前这一步靠人工：先把 90 多 MB 的 artifact 下到本地，再用 API
+      # 传回 Release —— 一来一回几百兆，慢且容易失败。现在交给 CI，
+      # 编译机和 Release 都在云端，文件不用落本地。
+      #
+      # 说明文档放在 docs/releases/<tag>.md；没有就到自动生成的更新说明。
+      - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          SRC="build/app/outputs/flutter-apk/app-release.apk"
+          OUT="zaori-kangfu-${TAG}.apk"
+          cp "$SRC" "$OUT"
+          echo "准备发布 $TAG，文件 $OUT（$(du -h "$OUT" | cut -f1)）"
+          if [ -f "docs/releases/${TAG}.md" ]; then
+            gh release create "$TAG" "$OUT" \
+              --title "早日康复 ${TAG}" \
+              --notes-file "docs/releases/${TAG}.md"
+          else
+            gh release create "$TAG" "$OUT" \
+              --title "早日康复 ${TAG}" \
+              --generate-notes
+          fi
