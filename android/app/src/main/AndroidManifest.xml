@@ -143,7 +143,20 @@
              ================================================================== -->
         <receiver
             android:name=".GuardAlarmReceiver"
-            android:exported="false" />
+            android:exported="false">
+            <!-- V1.17.4：重启/应用更新后系统会清空本应用的全部闹钟。
+                 fln 的通知有它自己的 boot receiver 重排，但真正负责
+                 「弹界面 + 循环响铃」的第二通道以前没人管 —— 于是到点
+                 只剩一条通知，没有铃声和界面，点开才响。
+                 用户感知就是「偶尔不响」，而且总在重启或装新版之后。
+                 不加这两个 filter，覆盖安装后的第一次吃药必然漏。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <!-- ==================================================================
              后台守护前台服务（V1.6.0）

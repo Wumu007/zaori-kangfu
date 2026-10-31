@@ -151,7 +151,7 @@ jobs:
 
       - name: 编译 Release APK
         run: |
-          flutter build apk --release --target-platform android-arm,android-arm64 --build-name=1.17.3 --build-number=${GITHUB_RUN_NUMBER}
+          flutter build apk --release --target-platform android-arm,android-arm64 --build-name=1.17.4 --build-number=${GITHUB_RUN_NUMBER}
           echo "--- 产物 ---"
           ls -lh build/app/outputs/flutter-apk/
 

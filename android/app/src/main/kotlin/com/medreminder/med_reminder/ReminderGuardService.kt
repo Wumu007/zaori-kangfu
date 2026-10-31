@@ -52,15 +52,33 @@ class ReminderGuardService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
 
+    private var tick = 0
+
     /**
-     * 每分钟轻量 ping 一次。
+     * 每分钟一次心跳；每 5 分钟顺手把闹钟补排一遍（V1.17.4）。
      *
-     * 不是为了做业务，而是让进程持续有调度活动 —— 某些 ROM 把
-     * 「长时间无调度」的后台进程判定为空闲并回收，这个心跳能绕开
-     * 那类启发式判断。
+     * 开机 / 应用更新这两种「系统会清空全部闹钟」的情况，现在由
+     * GuardAlarmReceiver 的 BOOT_COMPLETED / MY_PACKAGE_REPLACED
+     * 接住了。但国产 ROM 还会在运行期间自己把第三方闹钟清掉
+     *（省电策略、深度冻结解冻、后台清理），这类清空**没有任何广播**，
+     * 只能靠「定期补一遍」兜底 —— 这正是「偶尔不响」的另一半。
+     *
+     * 补排是幂等的：同一个 PendingIntent 再 setAlarmClock 只会替换，
+     * 不会重复响；已过点的那几条会被 scheduleAll 跳过，也不会补响旧提醒。
+     * 每 5 分钟二十几条 AlarmManager 写入，耗电可忽略。
      */
     private val heartbeat = object : Runnable {
         override fun run() {
+            tick++
+            if (tick % 5 == 0) {
+                try {
+                    val n = GuardAlarm.scheduleAll(this@ReminderGuardService)
+                    // 每半小时记一条，避免把原生日志刷满（上限 400 行）
+                    if (tick % 30 == 0) {
+                        NativeLog.log("GuardService", "例行补排 $n 条闹钟（已运行 $tick 分钟）")
+                    }
+                } catch (_: Exception) {}
+            }
             handler.postDelayed(this, 60_000L)
         }
     }

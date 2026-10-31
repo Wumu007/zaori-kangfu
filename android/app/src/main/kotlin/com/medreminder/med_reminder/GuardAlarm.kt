@@ -97,14 +97,18 @@ object GuardAlarm {
     }
 
     /**
-     * 逐条排 alarm。
+     * 逐条排 alarm，返回成功排上的条数。
      *
      * 用 setAlarmClock 而不是 setExact：前者在锁屏上显示闹钟图标、
      * 不被 Doze 延后，是系统里优先级最高的定时方式。
      * 时间已过的直接跳过（避免立刻弹一堆过期提醒）。
+     *
+     * V1.17.4：改成返回条数 —— 开机/更新后的恢复需要知道到底补回了
+     * 几条，日志里「重排 0 条」和「重排 21 条」意义完全不同。
      */
     @JvmStatic
-    fun scheduleAll(context: Context) {
+    fun scheduleAll(context: Context): Int {
+        var placed = 0
         try {
             val arr = read(context)
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -125,6 +129,7 @@ object GuardAlarm {
                 try {
                     // 主：闹钟到点直接拉起界面（绕过速冻）
                     am.setAlarmClock(AlarmManager.AlarmClockInfo(at, showIntent), activityPi)
+                    placed++
                     // 备：晚 2 秒的广播（界面被拦时至少发通知 + 起响铃服务）
                     try {
                         am.setExactAndAllowWhileIdle(
@@ -137,10 +142,12 @@ object GuardAlarm {
                     // 没有精确闹钟权限时退到不精确，至少还有机会响
                     try {
                         am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, broadcastPi)
+                        placed++
                     } catch (_: Exception) {}
                 }
             }
         } catch (_: Exception) {}
+        return placed
     }
 
     /**
@@ -362,6 +369,33 @@ object GuardAlarm {
  */
 class GuardAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+
+        // ═══════════════════════════════════════════════════════════
+        // 开机 / 应用更新 → 把第二通道的闹钟补回来（V1.17.4）
+        // ═══════════════════════════════════════════════════════════
+        //
+        // 系统在**重启**和**应用被更新**这两种情况下，会清空本应用通过
+        // AlarmManager 排的全部闹钟。fln 那批有它自己的 boot receiver
+        // （ScheduledNotificationBootReceiver）负责重排，所以通知还会来；
+        // 但真正负责「弹界面 + 循环响铃」的第二通道如果没人接这一棒，
+        // 就会一路空着，直到用户下次手动打开 App。
+        //
+        // 用户看到的现象正是如此：到点只有一条通知躺在通知栏，
+        // 没有铃声、没有界面，点开才响 —— 而且只发生在「手机重启过」
+        // 或「刚装了新版本」之后，所以感觉是「偶尔不响」。
+        //
+        // 对照 10-31 的日志：08:32 之前原生日志里一条「闹钟触发」都没有，
+        // 直到 08:32:07 用户手动冷启动、重新排程（第二通道 21 条）为止。
+        if (isRestoreAction(intent.action)) {
+            val n = GuardAlarm.scheduleAll(context)
+            NativeLog.log(
+                "GuardAlarmReceiver",
+                "系统事件 ${intent.action} → 补排第二通道 $n 条",
+            )
+            NativeLog.flush(context)
+            return
+        }
+
         val id = intent.getIntExtra("id", 0)
         val title = intent.getStringExtra("title") ?: "该吃药了"
         val body = intent.getStringExtra("body") ?: ""
@@ -424,5 +458,13 @@ class GuardAlarmReceiver : BroadcastReceiver() {
         // 前台服务有两件事做得到：进程不被立刻回收（铃声能持续），
         // 以及可以反复尝试拉起界面。
         RingingService.start(context, id, title, body, payload)
+    }
+
+    /** 这些系统事件发生后，本应用的闹钟会被系统清空，需要补排 */
+    private fun isRestoreAction(action: String?): Boolean {
+        return action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            action == "android.intent.action.QUICKBOOT_POWERON" ||
+            action == "com.htc.intent.action.QUICKBOOT_POWERON"
     }
 }
