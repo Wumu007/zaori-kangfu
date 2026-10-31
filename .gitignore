@@ -13,9 +13,10 @@ android/.gradle/
 android/key.properties
 *.jks
 *.keystore
-# 注意：android/app/keystore.b64 是**故意提交**的固定签名密钥（base64）。
-# 不提交它，每次云端构建就会生成随机 debug 签名，导致装新版必须先卸载，
-# 一卸载数据全丢。本项目为私有仓库、个人自用，故把它入库。
+# 签名密钥绝不入库（仓库已公开）。密钥只存 GitHub Secrets：
+# ANDROID_KEYSTORE_BASE64 / ANDROID_STORE_PASSWORD /
+# ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD。
+android/app/*.b64
 
 # ---- IDE ----
 .idea/
