@@ -68,6 +68,8 @@ object GuardAlarm {
                 .edit().putString(KEY, json).apply()
         } catch (_: Exception) {}
         scheduleAll(context)
+        // 每次重排都顺手续一次看门狗，保证它一直链着（V1.17.5）
+        scheduleWatchdog(context)
     }
 
     /**
@@ -225,6 +227,65 @@ object GuardAlarm {
             i,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+    }
+
+    /**
+     * 看门狗闹钟（V1.17.5）
+     *
+     * ═══════════════════════════════════════════════════════════════
+     * 为什么必须要有它（用户第 11 份日志 + 观察）
+     * ═══════════════════════════════════════════════════════════════
+     *
+     * 用户的原话很有决定性：
+     *   「通知栏里有『正在守护用药提醒』的图标时到点会响，
+     *     没有这个图标时就不会响。」
+     *
+     * 那个图标就是 ReminderGuardService 的前台通知。图标在 = 进程活着、
+     * 有前台身份 = 系统不冻结它 = 闹钟广播能被及时处理。
+     * 图标不在 = 服务已被 ROM 清掉 = 进程成了普通后台 = 被冻结，
+     * 到点投递的广播只能排队，用户什么都感觉不到。
+     *
+     * 问题是 START_STICKY 救不回来：Android 12+ 禁止应用从后台启动
+     * 前台服务，系统想重建也被拒。于是服务一死就是永久死，
+     * 直到用户下次手动打开 App。
+     *
+     * 唯一能让「死掉的进程自己活过来」的，是系统级的定时唤醒 ——
+     * 也就是闹钟本身。这条看门狗每 15 分钟醒一次：
+     *   1. 先把下一次看门狗排上（链式自续，永不中断）；
+     *   2. 补排提醒闹钟；
+     *   3. 守护服务不在跑就把它拉起来。
+     *
+     * 精确闹钟触发的广播属于「允许启动前台服务」的豁免场景
+     *（应用持 SCHEDULE_EXACT_ALARM / USE_EXACT_ALARM），所以这一步
+     * 在 Android 12+ 上合法。
+     */
+    // internal 而不是 private：同文件的 GuardAlarmReceiver 要拿它做判断
+    internal const val WATCHDOG_ACTION = "com.medreminder.med_reminder.WATCHDOG"
+    private const val WATCHDOG_REQ = 0x7000
+    private const val WATCHDOG_INTERVAL_MS = 15 * 60 * 1000L
+
+    /** 排下一次看门狗（幂等：同一个 PendingIntent 只会替换） */
+    @JvmStatic
+    fun scheduleWatchdog(context: Context) {
+        try {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val at = System.currentTimeMillis() + WATCHDOG_INTERVAL_MS
+            val i = Intent(context, GuardAlarmReceiver::class.java).apply {
+                action = WATCHDOG_ACTION
+            }
+            val pi = PendingIntent.getBroadcast(
+                context,
+                WATCHDOG_REQ,
+                i,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            try {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            } catch (_: Exception) {
+                // 没有精确闹钟权限时退到不精确，仍然能起到「定期自愈」的作用
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            }
+        } catch (_: Exception) {}
     }
 
     /**
@@ -388,9 +449,48 @@ class GuardAlarmReceiver : BroadcastReceiver() {
         // 直到 08:32:07 用户手动冷启动、重新排程（第二通道 21 条）为止。
         if (isRestoreAction(intent.action)) {
             val n = GuardAlarm.scheduleAll(context)
+            // 重启/更新后看门狗也一起归零了，必须重新排上（V1.17.5）
+            GuardAlarm.scheduleWatchdog(context)
             NativeLog.log(
                 "GuardAlarmReceiver",
                 "系统事件 ${intent.action} → 补排第二通道 $n 条",
+            )
+            NativeLog.flush(context)
+            return
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 看门狗：每 15 分钟醒一次，负责「让死掉的自己活过来」（V1.17.5）
+        // ═══════════════════════════════════════════════════════════
+        //
+        // 这条是整个后台方案里唯一的「自愈」入口。守护服务被 ROM 清掉后，
+        // START_STICKY 在 Android 12+ 上救不回来（禁止后台启动前台服务），
+        // 只能靠系统级的定时唤醒把它重新拉起来。
+        //
+        // 三步：续下一次 → 补排闹钟 → 拉起服务。顺序不能反 ——
+        // 先续上链条，即使后面两步抛异常，15 分钟后还有机会。
+        if (intent.action == GuardAlarm.WATCHDOG_ACTION) {
+            GuardAlarm.scheduleWatchdog(context)
+            val n = try { GuardAlarm.scheduleAll(context) } catch (_: Exception) { 0 }
+            val wasRunning = ReminderGuardService.running
+            if (!wasRunning) {
+                try {
+                    val si = Intent(context, ReminderGuardService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(si)
+                    } else {
+                        context.startService(si)
+                    }
+                } catch (e: Exception) {
+                    NativeLog.log(
+                        "GuardAlarmReceiver",
+                        "看门狗拉起守护服务被拒: ${e.javaClass.simpleName} ${e.message}",
+                    )
+                }
+            }
+            NativeLog.log(
+                "GuardAlarmReceiver",
+                "看门狗：补排 $n 条，守护服务${if (wasRunning) "在跑" else "已尝试拉起"}",
             )
             NativeLog.flush(context)
             return

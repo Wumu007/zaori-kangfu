@@ -41,7 +41,18 @@ import android.os.Looper
 class ReminderGuardService : Service() {
 
     companion object {
-        const val CHANNEL_ID = "med_guard_v1"
+        /**
+         * V1.17.5：从 med_guard_v1 换成 v2。
+         *
+         * Android 8+ 的通知渠道重要性**创建后不可修改**，老用户手机上
+         * 那个渠道还是 IMPORTANCE_MIN。MIN 级别的通知会被系统折叠进
+         * 「其他通知」，图标根本不显示 —— 而用户恰恰是靠「通知栏有没有
+         * 那个守护图标」判断后台是否正常的。
+         *
+         * 换成新渠道才能把重要性提到 LOW：仍然安静无声，但图标常驻可见，
+         * 服务也不会因为通知被折叠而降低优先级。
+         */
+        const val CHANNEL_ID = "med_guard_v2"
         const val NOTIFICATION_ID = 9001
 
         /** App 是否已经请求过开启守护（进程内标记，供 Dart 查询） */
@@ -73,9 +84,10 @@ class ReminderGuardService : Service() {
             if (tick % 5 == 0) {
                 try {
                     val n = GuardAlarm.scheduleAll(this@ReminderGuardService)
-                    // 每半小时记一条，避免把原生日志刷满（上限 400 行）
-                    if (tick % 30 == 0) {
-                        NativeLog.log("GuardService", "例行补排 $n 条闹钟（已运行 $tick 分钟）")
+                    // 每 15 分钟记一条：这条日志是「服务有没有活着」的唯一证据。
+                    // 用户第 11 份日志里 7 个半小时一条都没有，正是服务早被清掉的铁证。
+                    if (tick % 15 == 0) {
+                        NativeLog.log("GuardService", "存活 $tick 分钟，例行补排 $n 条闹钟")
                     }
                 } catch (_: Exception) {}
             }
@@ -102,6 +114,9 @@ class ReminderGuardService : Service() {
             }
             running = true
             handler.postDelayed(heartbeat, 60_000L)
+            // V1.17.5：服务活着的时候把看门狗续上。
+            // 服务一旦被清掉就再也排不了东西，所以这一步必须趁它还活着做。
+            GuardAlarm.scheduleWatchdog(this)
         } catch (e: Exception) {
             android.util.Log.e("MedReminder", "guard startForeground failed: $e")
             running = false
@@ -130,7 +145,10 @@ class ReminderGuardService : Service() {
         val ch = NotificationChannel(
             CHANNEL_ID,
             "后台提醒守护",
-            NotificationManager.IMPORTANCE_MIN,
+            // V1.17.5：MIN → LOW。MIN 会被折叠进「其他通知」，图标看不见；
+            // 用户正是靠这个图标判断后台是否正常，必须让它常驻可见。
+            // LOW 仍然无声、不震动、不亮灯，只是把图标露出来。
+            NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "保持应用在后台也能准时提醒服药"
             setShowBadge(false)
